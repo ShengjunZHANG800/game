@@ -388,6 +388,11 @@ const npcById = Object.fromEntries(NPCS.map((item) => [item.id, item]))
 const rarityRank = { 普通: 1, 优良: 2, 稀有: 3, 史诗: 4, 传说: 5 }
 const routeLabels = { trade: '跑商', explore: '探险', combat: '战斗', social: '社交' }
 const commissionLabels = { delivery: '交货', survey: '勘探', bounty: '悬赏', social: '拜访' }
+const FACTION_FAVOR_TIERS = [
+  { min: 9, name: '座上商号', text: '本地势力愿意替你压价、加赏并回收好装备。' },
+  { min: 5, name: '可信跑商', text: '委托报酬提高，进出本地时更容易拿到照应。' },
+  { min: 2, name: '照面熟客', text: '买卖谈价略有余地，市面小麻烦也有人通风报信。' },
+]
 
 const COMMISSION_TEXT = {
   delivery: ['急需补货', '临时采购', '补给缺口', '账房点名要货'],
@@ -628,6 +633,71 @@ function getGuildBonuses(game) {
   }
 }
 
+function getFactionForLocation(locationId) {
+  return FACTIONS.find((faction) => faction.locationId === locationId) ?? null
+}
+
+function getFactionFavor(game, locationId = game.location) {
+  const faction = getFactionForLocation(locationId)
+  const value = faction ? (game.factions?.[faction.id] ?? 0) : 0
+  const tier = FACTION_FAVOR_TIERS.find((item) => value >= item.min) ?? null
+  return { faction, value, tier, rank: tier ? FACTION_FAVOR_TIERS.length - FACTION_FAVOR_TIERS.indexOf(tier) : 0 }
+}
+
+function getFactionFavorBonus(game, locationId = game.location) {
+  const { rank } = getFactionFavor(game, locationId)
+  return {
+    tradeBonus: Math.min(rank * 0.012, 0.04),
+    commissionBonus: Math.min(rank * 0.035, 0.1),
+    equipmentSellBonus: Math.min(rank * 0.025, 0.08),
+    pressureRelief: rank,
+  }
+}
+
+function describeFactionFavor(game, locationId = game.location) {
+  const favor = getFactionFavor(game, locationId)
+  if (!favor.faction) return '本地暂无线人照应。'
+  if (!favor.tier) return `${favor.faction.name}好感 ${favor.value}：仍是普通往来，完成委托可逐步打开门路。`
+  return `${favor.faction.name}好感 ${favor.value} · ${favor.tier.name}：${favor.tier.text}`
+}
+
+function createFactionFavorEvent(game, location) {
+  const favor = getFactionFavor(game, location.id)
+  if (!favor.tier) return null
+  const localGoods = LOCATION_TRAITS[location.id]?.localGoods ?? GOODS.map((good) => good.id)
+  const good = goodsById[pick(localGoods)]
+  const events = [
+    () => ({
+      kind: 'goods',
+      goodId: good.id,
+      amount: rand(1, favor.rank >= 2 ? 2 : 1),
+      text: `${favor.faction.name}的熟面孔提前替你留下一份${good.name}样货。`,
+    }),
+    () => ({
+      kind: 'pressure',
+      amount: -Math.max(1, favor.rank),
+      text: `${favor.faction.name}派人带你避开盘查和闲杂眼线。`,
+    }),
+  ]
+  if (favor.rank >= 2) {
+    events.push(() => ({
+      kind: 'reward',
+      gold: rand(45, 115 + favor.rank * 35),
+      rep: 0,
+      text: `${favor.faction.name}把一笔临时跑腿钱直接交给你的商号。`,
+    }))
+  }
+  if (favor.rank >= 3) {
+    events.push(() => ({
+      kind: 'market',
+      goodId: good.id,
+      factor: rand(116, 138) / 100,
+      text: `${favor.faction.name}为你放出优先收购口风，${good.name}在本地更好卖了。`,
+    }))
+  }
+  return pick(events)()
+}
+
 function createCommissions(locationId, day) {
   const location = locationsById[locationId]
   const trait = LOCATION_TRAITS[locationId] ?? {}
@@ -726,7 +796,7 @@ function getEquipmentSellPrice(game, item) {
   const riskBonus = 1 + Math.max(0, location.risk - 2) * 0.025
   const factionBonus = Math.min(((game.factions?.[trait.factionId] ?? 0) * 0.012), 0.14)
   const newsBonus = (game.worldNews ?? []).some((news) => news.locationId === location.id && news.equipmentSlot === item.slot) ? 1.12 : 1
-  const passiveBonus = 1 + getEquipmentPassives(game).sellBonus + getGuildBonuses(game).tradeBonus
+  const passiveBonus = 1 + getEquipmentPassives(game).sellBonus + getGuildBonuses(game).tradeBonus + getFactionFavorBonus(game).equipmentSellBonus
   const wave = dayWave(game.day, `${location.id}-${item.id}`, 0.1)
   return Math.max(8, Math.round(item.price * rarityBonus * slotBonus * sourceBonus * riskBonus * (1 + factionBonus) * newsBonus * passiveBonus * wave))
 }
@@ -740,7 +810,9 @@ function describeEquipmentMarket(game) {
     .slice(0, 2)
     .map(([slot]) => slotName(slot))
     .join('、')
-  return `${location.name}装备行情：${trait.equipmentHint}${slots ? ` 今日更偏好${slots}。` : ''}`
+  const favor = getFactionFavor(game, location.id)
+  const favorText = favor.tier ? ` ${favor.tier.name}会让回收价更好。` : ''
+  return `${location.name}装备行情：${trait.equipmentHint}${slots ? ` 今日更偏好${slots}。` : ''}${favorText}`
 }
 
 function createRouteCondition(day, locationId) {
@@ -1110,8 +1182,9 @@ function getPrice(game, goodId, mode = 'buy') {
   const assist = getAssist(game)
   const passives = getEquipmentPassives(game)
   const guildBonuses = getGuildBonuses(game)
+  const factionFavor = getFactionFavorBonus(game)
   const typeBonus = passives.goodTypeBonus && good.type === passives.goodTypeBonus ? 0.05 : 0
-  const bargain = (assist?.type === 'bargain' ? 0.06 : 0) + passives.tradeBonus + guildBonuses.tradeBonus + typeBonus
+  const bargain = (assist?.type === 'bargain' ? 0.06 : 0) + passives.tradeBonus + guildBonuses.tradeBonus + factionFavor.tradeBonus + typeBonus
   const buyPrice = good.base * locationMod * (game.market[goodId] ?? 1) * (1 - repDiscount - bargain)
   return Math.max(1, Math.round(mode === 'sell' ? buyPrice * (0.82 + bargain) : buyPrice))
 }
@@ -1144,7 +1217,7 @@ function getTodayFocus(game) {
     condition: getRouteConditionEffect(game.routeCondition).name,
     localScene: game.localScene?.name ?? '平稳市面',
     commission: commission ? `${commissionLabels[commission.type]}：${commission.text}` : '今日暂无委托',
-    mastery: `本地熟练度 ${getMasteryLevel(game, game.location)} 级`,
+    mastery: `本地熟练度 ${getMasteryLevel(game, game.location)} 级 · ${getFactionFavor(game).tier?.name ?? '普通往来'}`,
   }
 }
 
@@ -1419,6 +1492,8 @@ function createLocalEvent(game, location, mode = 'travel') {
     () => ({ kind: 'rumor', text: `${location.name}的酒桌闲谈给了你新的行情侧写。` }),
     () => ({ kind: 'pressure', amount: -rand(1, 3), text: `${location.name}的熟门熟路让车队轻松不少，风险压力下降。` }),
   ]
+  const favorEvent = createFactionFavorEvent(game, location)
+  if (favorEvent && Math.random() < 0.16 + getFactionFavor(game, location.id).rank * 0.05) return favorEvent
   return pick([...(templates[location.id] ?? []), ...shared])()
 }
 
@@ -1839,7 +1914,8 @@ function App() {
       const guildBonuses = getGuildBonuses(current)
       const conditionEffect = getRouteConditionEffect(current.routeCondition)
       const masteryDiscount = Math.min(getMasteryLevel(current, locationId) * 0.025, 0.1)
-      const costFactor = Math.max(0.62, (assist?.type === 'route' ? 0.8 : 1) - passives.routeDiscount - guildBonuses.routeDiscount - masteryDiscount)
+      const factionFavor = getFactionFavorBonus(current, locationId)
+      const costFactor = Math.max(0.62, (assist?.type === 'route' ? 0.8 : 1) - passives.routeDiscount - guildBonuses.routeDiscount - masteryDiscount - factionFavor.tradeBonus)
       const travelCost = Math.max(6, Math.round((Math.round(destination.cost * 0.82) + Math.max(0, destination.risk - getTotals(current).reputation) * 2) * costFactor * conditionEffect.travelCost))
       if (current.gold < travelCost) return addLog(current, `前往${destination.name}至少需要 ${travelCost} 金币路费。`)
       const dayUpdates = advanceDay(current, current.day + 1, locationId)
@@ -1853,7 +1929,7 @@ function App() {
           location: locationId,
           gold: current.gold - travelCost,
           market: rollMarket(locationId, dayUpdates.rumors, dayUpdates.worldNews ?? current.worldNews ?? [], dayUpdates.localScene),
-          riskPressure: clamp((current.riskPressure ?? 0) + destination.risk + conditionEffect.pressure + (dayUpdates.localScene?.pressure ?? 0) - Math.floor(getTotals(current).reputation / 5), 0, 24),
+          riskPressure: clamp((current.riskPressure ?? 0) + destination.risk + conditionEffect.pressure + (dayUpdates.localScene?.pressure ?? 0) - Math.floor(getTotals(current).reputation / 5) - factionFavor.pressureRelief, 0, 24),
           stats: {
             ...current.stats,
             travels: current.stats.travels + 1,
@@ -1875,7 +1951,8 @@ function App() {
       const guildBonuses = getGuildBonuses(current)
       const conditionEffect = getRouteConditionEffect(current.routeCondition)
       const masteryDiscount = Math.min(getMasteryLevel(current, current.location) * 0.03, 0.12)
-      const costFactor = Math.max(0.58, (assist?.type === 'scout' ? 0.78 : 1) - passives.exploreDiscount - guildBonuses.exploreDiscount - masteryDiscount)
+      const factionFavor = getFactionFavorBonus(current, current.location)
+      const costFactor = Math.max(0.58, (assist?.type === 'scout' ? 0.78 : 1) - passives.exploreDiscount - guildBonuses.exploreDiscount - masteryDiscount - factionFavor.tradeBonus)
       const exploreCost = Math.max(10, Math.round((12 + location.risk * 8 - getTotals(current).reputation) * costFactor * conditionEffect.exploreCost))
       if (current.gold < exploreCost) return addLog(current, `探索${location.name}需要 ${exploreCost} 金币准备补给。`)
       const dayUpdates = advanceDay(current, current.day + 1, current.location)
@@ -1888,7 +1965,7 @@ function App() {
           ...dayUpdates,
           gold: current.gold - exploreCost,
           market: rollMarket(current.location, dayUpdates.rumors, dayUpdates.worldNews ?? current.worldNews ?? [], dayUpdates.localScene),
-          riskPressure: clamp((current.riskPressure ?? 0) + location.risk + 1 + conditionEffect.pressure + (dayUpdates.localScene?.pressure ?? 0) - getMasteryLevel(current, current.location), 0, 24),
+          riskPressure: clamp((current.riskPressure ?? 0) + location.risk + 1 + conditionEffect.pressure + (dayUpdates.localScene?.pressure ?? 0) - getMasteryLevel(current, current.location) - factionFavor.pressureRelief, 0, 24),
           stats: {
             ...current.stats,
             explores: (current.stats.explores ?? 0) + 1,
@@ -1949,7 +2026,7 @@ function App() {
       const commission = (current.commissions ?? []).find((item) => item.id === commissionId)
       if (!commission) return current
       const remaining = (current.commissions ?? []).filter((item) => item.id !== commissionId)
-      const rewardScale = 1 + getEquipmentPassives(current).commissionBonus + getGuildBonuses(current).commissionBonus + getMasteryLevel(current, commission.locationId) * 0.025
+      const rewardScale = 1 + getEquipmentPassives(current).commissionBonus + getGuildBonuses(current).commissionBonus + getFactionFavorBonus(current, commission.locationId).commissionBonus + getMasteryLevel(current, commission.locationId) * 0.025
       const rewardGold = Math.round(commission.rewardGold * rewardScale)
       const factionId = commission.factionId
       const rewardBase = (state, route = 'trade') => awardGuild(addLocationMastery({
@@ -2540,6 +2617,7 @@ function App() {
                 <span key={faction.id} className={faction.locationId === game.location ? 'active' : ''}>
                   <strong>{faction.name}</strong>
                   <small>好感 {game.factions?.[faction.id] ?? 0} · {faction.text}</small>
+                  <small>{describeFactionFavor(game, faction.locationId)}</small>
                 </span>
               ))}
             </div>
