@@ -360,7 +360,13 @@ button:disabled {
 }
 
 .view-trade .game-grid {
-  grid-template-columns: minmax(280px, 0.78fr) minmax(460px, 1.5fr) minmax(290px, 0.82fr);
+  grid-template-columns: minmax(300px, 0.72fr) minmax(560px, 1.45fr);
+  align-items: start;
+}
+
+.view-trade .side-stack {
+  grid-column: 1 / -1;
+  grid-template-columns: 1fr;
 }
 
 .view-equipment .equipment-shop-row {
@@ -552,9 +558,9 @@ button:disabled {
 }
 
 .market-list {
-  max-height: min(72vh, 760px);
-  padding-right: 4px;
-  overflow: auto;
+  max-height: none;
+  padding-right: 0;
+  overflow: visible;
 }
 
 .market-row,
