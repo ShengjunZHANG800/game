@@ -310,6 +310,7 @@ button:disabled {
 .workbench .role-panel,
 .workbench .rumor-panel,
 .workbench .faction-panel,
+.workbench .camp-panel,
 .workbench .commission-panel,
 .workbench .discovery-panel,
 .workbench .social-panel,
@@ -321,6 +322,7 @@ button:disabled {
 .view-trade .trade-market-panel,
 .view-trade .rumor-panel,
 .view-adventure .travel-route-panel,
+.view-adventure .camp-panel,
 .view-adventure .commission-panel,
 .view-adventure .discovery-panel,
 .view-people .social-panel,
@@ -673,6 +675,7 @@ button:disabled {
 .equipment-market-note,
 .guild-card span,
 .guild-card small,
+.camp-card span,
 .commission-card span,
 .commission-card small {
   color: #d6c7aa;
@@ -779,6 +782,54 @@ button:disabled {
 .local-lead-card.is-empty {
   border-color: rgba(255, 255, 255, 0.1);
   background: rgba(255, 255, 255, 0.04);
+}
+
+.camp-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 10px;
+}
+
+.camp-card {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+  min-height: 154px;
+  padding: 11px;
+  border: 1px solid rgba(240, 201, 106, 0.18);
+  border-radius: 8px;
+  background: rgba(48, 51, 45, 0.45);
+}
+
+.camp-card strong {
+  color: #fff6dd;
+}
+
+.camp-card button {
+  align-self: end;
+  justify-self: start;
+  min-height: 32px;
+  padding: 5px 10px;
+}
+
+.camp-trade {
+  border-color: rgba(240, 201, 106, 0.26);
+  background: rgba(92, 68, 34, 0.26);
+}
+
+.camp-explore {
+  border-color: rgba(142, 230, 168, 0.24);
+  background: rgba(35, 68, 50, 0.2);
+}
+
+.camp-combat {
+  border-color: rgba(255, 125, 112, 0.24);
+  background: rgba(92, 43, 37, 0.2);
+}
+
+.camp-social {
+  border-color: rgba(201, 151, 255, 0.24);
+  background: rgba(58, 44, 76, 0.24);
 }
 
 .commission-card {

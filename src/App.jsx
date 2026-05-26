@@ -125,6 +125,7 @@ const ACHIEVEMENTS = [
   { id: 'famous', name: '声名远扬', text: '声望达到 12。', test: (s) => s.reputation >= 12 },
   { id: 'connected', name: '各地都有熟人', text: '触发 15 次随机事件。', test: (s) => s.stats.events >= 15 },
   { id: 'streetwise', name: '街巷消息人', text: '追查 8 条本地线索。', test: (s) => (s.stats.localLeadsFollowed ?? 0) >= 8 },
+  { id: 'campPlanner', name: '夜营老手', text: '执行 10 次夜营策略。', test: (s) => (s.stats.campActions ?? 0) >= 10 },
   { id: 'profiteer', name: '算盘响亮', text: '累计净收入达到 2000。', test: (s) => s.stats.profit >= 2000 },
   { id: 'longRun', name: '三十日商路', text: '坚持到第 30 天。', test: (s) => s.day >= 30 },
   { id: 'firstBond', name: '第一次心动', text: '结识第一位人物。', test: (s) => (s.knownNpcIds?.length ?? 0) >= 1 },
@@ -420,6 +421,13 @@ const LOCAL_LEAD_TEMPLATES = [
   { type: 'contact', title: '熟人引见', weight: 11, cost: [16, 38], text: '茶馆里有人能把你介绍给正巧在本地办事的人物。' },
   { type: 'landmark', title: '旧地图角', weight: 10, cost: [20, 48], text: '一张旧地图角落写着本地还没公开的去处。' },
   { type: 'security', title: '巡路口信', weight: 9, cost: [12, 30], text: '驿站跑腿带来一条可避开麻烦的巡路口信。' },
+]
+
+const CAMP_ACTIONS = [
+  { id: 'repair', name: '补轮整车', route: 'explore', cost: 24, text: '修补车轮、检查药包，恢复生命并清掉一点风险压力。' },
+  { id: 'ledger', name: '摊账听价', route: 'trade', cost: 18, text: '把账本摊到旅店桌上，换一轮更密的明日风向和本地价格试探。' },
+  { id: 'watch', name: '轮岗守夜', route: 'combat', cost: 20, text: '加派守夜和巡车人手，明显压低风险压力。' },
+  { id: 'campfire', name: '篝火谈心', route: 'social', cost: 16, text: '把晚餐做得体面些，可能加深一段已结识的人物关系。' },
 ]
 
 const ROUTE_CONDITIONS = [
@@ -920,6 +928,7 @@ function normalizeStats(baseStats, stats = {}) {
     routeContractsDone: stats.routeContractsDone ?? 0,
     routeContractIncidents: stats.routeContractIncidents ?? 0,
     localLeadsFollowed: stats.localLeadsFollowed ?? 0,
+    campActions: stats.campActions ?? 0,
     pressureCleared: stats.pressureCleared ?? 0,
     npcQuests: stats.npcQuests ?? 0,
     landmarksFound: stats.landmarksFound ?? 0,
@@ -1059,6 +1068,23 @@ function describeLocalLead(lead) {
   return `${location?.name ?? '本地'}线索：${lead.title}，${lead.text} ${detail}花费 ${lead.cost} 金币。`
 }
 
+function getCampActionCost(game, action) {
+  const location = locationsById[game.location] ?? LOCATIONS[0]
+  const mastery = getMasteryLevel(game, game.location)
+  const favorRelief = getFactionFavorBonus(game, game.location).pressureRelief
+  return Math.max(8, Math.round((action.cost + location.risk * 4 - mastery * 2 - favorRelief * 2) * dayWave(game.day, `${action.id}-${game.location}`, 0.08)))
+}
+
+function describeCampAction(game, action) {
+  const cost = getCampActionCost(game, action)
+  if (action.id === 'repair') return `${action.text} 预计花费 ${cost} 金币。`
+  if (action.id === 'ledger') return `${action.text} 预计花费 ${cost} 金币。`
+  if (action.id === 'watch') return `${action.text} 当前压力 ${(game.riskPressure ?? 0)}/24，预计花费 ${cost} 金币。`
+  const known = (game.knownNpcIds ?? []).map((id) => npcById[id]?.name).filter(Boolean)
+  const target = known.length ? `可能与${known.slice(0, 3).join('、')}靠近。` : '若还未结识人物，会优先遇见本地熟人。'
+  return `${action.text} ${target}预计花费 ${cost} 金币。`
+}
+
 function createWorldNews(day) {
   const location = pick(LOCATIONS)
   const trait = LOCATION_TRAITS[location.id]
@@ -1132,7 +1158,7 @@ function parseLogEntry(entry) {
 function achievementCategory(achievement) {
   if (['firstBond', 'warmHeart', 'confession', 'firstMarriage', 'manyLoves', 'dates', 'giftGiver', 'companionRoad', 'personalQuests'].includes(achievement.id)) return '人物'
   if (['fighter', 'veteran', 'rareHunter', 'extremeRoad', 'firstLandmark', 'landmarkAtlas'].includes(achievement.id)) return '冒险'
-  if (['explorer', 'deepExplorer', 'connected', 'longRun', 'streetwise'].includes(achievement.id)) return '旅途'
+  if (['explorer', 'deepExplorer', 'connected', 'longRun', 'streetwise', 'campPlanner'].includes(achievement.id)) return '旅途'
   if (['factionFriend', 'alliedNetwork'].includes(achievement.id)) return '势力'
   return '经营'
 }
@@ -1286,6 +1312,7 @@ function createInitialGame() {
     discoveries: createInitialDiscoveries(),
     riskPressure: 0,
     activeAssist: null,
+    campUsedDay: 0,
     relationships: createEmptyRelationships(),
     knownNpcIds: [],
     partners: [],
@@ -1314,6 +1341,7 @@ function createInitialGame() {
       landmarksFound: 0,
       routeContractIncidents: 0,
       localLeadsFollowed: 0,
+      campActions: 0,
     },
     achievements: [],
     log: [
@@ -1413,6 +1441,7 @@ function getTodayFocus(game) {
     bestGoods,
     route,
     pressureText,
+    camp: game.campUsedDay === game.day ? '夜营已安排' : '夜营待安排',
     condition: getRouteConditionEffect(game.routeCondition).name,
     localScene: game.localScene?.name ?? '平稳市面',
     localLead: game.localLead ? `${game.localLead.title} · ${game.localLead.cost} 金币` : '暂无线索',
@@ -2011,6 +2040,7 @@ function encodeSave(game) {
     discoveries: game.discoveries,
     riskPressure: game.riskPressure,
     activeAssist: game.activeAssist,
+    campUsedDay: game.campUsedDay,
     relationships: game.relationships,
     knownNpcIds: game.knownNpcIds,
     partners: game.partners,
@@ -2047,6 +2077,7 @@ function decodeSave(text) {
     discoveries: normalizeDiscoveries(payload.discoveries),
     riskPressure: payload.riskPressure ?? 0,
     activeAssist: payload.activeAssist ?? null,
+    campUsedDay: payload.campUsedDay ?? 0,
     relationships: normalizeRelationships(payload.relationships),
     knownNpcIds: Array.isArray(payload.knownNpcIds) ? payload.knownNpcIds : [],
     partners: Array.isArray(payload.partners) ? payload.partners : [],
@@ -2490,6 +2521,95 @@ function App() {
     })
   }
 
+  const performCampAction = (actionId) => {
+    if (!canAct) return
+    commit((current) => {
+      const action = CAMP_ACTIONS.find((item) => item.id === actionId)
+      if (!action) return current
+      if (current.campUsedDay === current.day) return addTaggedLog(current, '夜营', '今天已经安排过夜营策略，明天再调整。')
+      const cost = getCampActionCost(current, action)
+      if (current.gold < cost) return addTaggedLog(current, '夜营', `${action.name}需要 ${cost} 金币。`)
+      const location = locationsById[current.location]
+      const campStats = { ...current.stats, campActions: (current.stats.campActions ?? 0) + 1 }
+      const base = {
+        ...current,
+        gold: current.gold - cost,
+        campUsedDay: current.day,
+        stats: campStats,
+      }
+      const campBase = (route = action.route, xp = 10) => awardGuild(addLocationMastery(base, current.location, route === 'combat' ? 'battles' : route === 'social' ? 'social' : route === 'trade' ? 'trades' : 'explores', 1), route, xp)
+
+      if (action.id === 'repair') {
+        const healed = rand(18, 32) + getMasteryLevel(current, current.location) * 2
+        const cleared = Math.min(current.riskPressure ?? 0, 2)
+        return addTaggedLog(
+          {
+            ...campBase('explore', 14),
+            hp: current.hp + healed,
+            riskPressure: Math.max(0, (current.riskPressure ?? 0) - cleared),
+            stats: { ...campStats, pressureCleared: (current.stats.pressureCleared ?? 0) + cleared },
+          },
+          '夜营',
+          `你在${location.name}补轮整车，花费 ${cost} 金币，恢复 ${healed} 生命${cleared ? `，风险压力 -${cleared}` : ''}。`,
+        )
+      }
+
+      if (action.id === 'ledger') {
+        const rumors = createRumors(current.day, getEquipmentPassives(current).rumorBonus + 1)
+        const localGoodId = pick(LOCATION_TRAITS[current.location]?.localGoods ?? GOODS.map((good) => good.id))
+        const factor = rand(94, 108) / 100
+        return addTaggedLog(
+          {
+            ...campBase('trade', 16),
+            rumors,
+            market: { ...current.market, [localGoodId]: Number(clamp((current.market[localGoodId] ?? 1) * factor, 0.42, 1.95).toFixed(2)) },
+          },
+          '夜营',
+          `你摊账听价，花费 ${cost} 金币，刷新明日风向，并小幅试探${goodsById[localGoodId].name}行情。`,
+        )
+      }
+
+      if (action.id === 'watch') {
+        const cleared = Math.min(current.riskPressure ?? 0, rand(4, 6))
+        const repGain = location.risk >= 4 && Math.random() < 0.35 ? 1 : 0
+        return addTaggedLog(
+          {
+            ...campBase('combat', 15),
+            reputation: current.reputation + repGain,
+            riskPressure: Math.max(0, (current.riskPressure ?? 0) - cleared),
+            stats: { ...campStats, pressureCleared: (current.stats.pressureCleared ?? 0) + cleared },
+          },
+          '夜营',
+          `你安排轮岗守夜，花费 ${cost} 金币，风险压力 -${cleared}${repGain ? '，严整车队也让声望 +1' : ''}。`,
+        )
+      }
+
+      const localNpc = pick(NPCS.filter((npc) => npc.location === current.location).length ? NPCS.filter((npc) => npc.location === current.location) : NPCS)
+      const npcId = (current.knownNpcIds ?? []).length ? pick(current.knownNpcIds) : localNpc.id
+      const npc = npcById[npcId]
+      const gain = rand(5, 10) + getEquipmentPassives(current).socialBonus
+      const metBefore = current.relationships?.[npcId]?.met
+      const socialCamp = updateRelationship(
+        {
+          ...campBase('social', 15 + gain),
+          stats: { ...campStats, socialActions: current.stats.socialActions + 1 },
+        },
+        npcId,
+        (rel) => ({
+          ...rel,
+          affection: clamp(rel.affection + gain, 0, 100),
+          interactions: rel.interactions + 1,
+          stage: relationStage({ ...rel, affection: clamp(rel.affection + gain, 0, 100) }),
+        }),
+      )
+      return addTaggedLog(
+        socialCamp,
+        '夜营',
+        `你在篝火边备了热汤和晚餐，花费 ${cost} 金币，${metBefore ? `${npc.name}坐近了一些` : `结识了${npc.name}`}。${npc.text} 好感 +${gain}。`,
+      )
+    })
+  }
+
   const restAtLocation = () => {
     if (!canAct) return
     commit((current) => {
@@ -2838,6 +2958,7 @@ function App() {
         <strong>日势：{todayFocus.localScene}</strong>
         <strong>线索：{todayFocus.localLead}</strong>
         <strong>风险：{todayFocus.pressureText}</strong>
+        <strong>夜营：{todayFocus.camp}</strong>
         <strong>商单：{todayFocus.contract}</strong>
         <strong>{todayFocus.commission}</strong>
       </section>
@@ -3022,6 +3143,25 @@ function App() {
               ) : (
                 <p className="empty-note">这里还没有记录秘闻。多探索本地、沿途留意线索，会逐步揭开地点故事。</p>
               )}
+            </div>
+          </section>
+
+          <section className="panel camp-panel">
+            <PanelTitle kicker="夜营" title="每日策略" />
+            <div className="camp-list">
+              {CAMP_ACTIONS.map((action) => {
+                const cost = getCampActionCost(game, action)
+                const used = game.campUsedDay === game.day
+                return (
+                  <article key={action.id} className={`camp-card camp-${action.route}`}>
+                    <strong>{action.name}</strong>
+                    <span>{describeCampAction(game, action)}</span>
+                    <button type="button" disabled={!canAct || used || game.gold < cost} onClick={() => performCampAction(action.id)}>
+                      {used ? '今日已安排' : `${cost} 金币`}
+                    </button>
+                  </article>
+                )
+              })}
             </div>
           </section>
 
