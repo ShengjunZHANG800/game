@@ -406,6 +406,45 @@ const ROUTE_CONDITIONS = [
 ]
 const routeConditionById = Object.fromEntries(ROUTE_CONDITIONS.map((item) => [item.id, item]))
 
+const LOCAL_SCENE_TEMPLATES = {
+  capital: [
+    { id: 'court-banquet', name: '宫宴备采', goodIds: ['silk', 'wine', 'candle'], factor: 1.22, pressure: -1, text: '贵族管家临时加单，体面货物更容易谈出高价。' },
+    { id: 'seal-audit', name: '契印复核', goodIds: ['grain', 'scroll', 'ink'], factor: 0.84, pressure: 1, text: '税务厅抽查契印，账面货物短暂压价，车队也更紧张。' },
+  ],
+  port: [
+    { id: 'low-tide', name: '退潮清仓', goodIds: ['pearl', 'spice', 'amber'], factor: 0.78, pressure: 0, text: '潮水退得早，船仓急着腾位，本地货源一时变多。' },
+    { id: 'captain-feast', name: '船长宴席', goodIds: ['wine', 'silk', 'candle'], factor: 1.2, pressure: -1, text: '远洋船长包下酒馆，奢侈货和礼仪用品都被抬价。' },
+  ],
+  mine: [
+    { id: 'deep-vein', name: '深脉开采', goodIds: ['ore', 'mithril', 'gear'], factor: 0.8, pressure: 1, text: '新矿脉刚被打通，矿样涌出，但井下事故也让车队绷紧神经。' },
+    { id: 'shift-strike', name: '换班停炉', goodIds: ['grain', 'herb', 'candle'], factor: 1.24, pressure: 2, text: '矿工换班和停炉检修撞在一起，补给品被一抢而空。' },
+  ],
+  forest: [
+    { id: 'moon-bloom', name: '月花盛开', goodIds: ['herb', 'moon', 'amber'], factor: 0.76, pressure: -1, text: '月花开满林地，药师会愿意低价放出新鲜采集物。' },
+    { id: 'mist-market', name: '雾中集市', goodIds: ['wine', 'silk', 'scroll'], factor: 1.18, pressure: 1, text: '精灵集市只开半日，稀奇客人把外来货物买得很快。' },
+  ],
+  fort: [
+    { id: 'front-list', name: '前线清单', goodIds: ['grain', 'candle', 'spice'], factor: 1.28, pressure: 2, text: '军需官贴出追加清单，民生和慰问货物立刻紧俏。' },
+    { id: 'salt-caravan', name: '霜盐车队', goodIds: ['salt', 'ore', 'gear'], factor: 0.82, pressure: -1, text: '北境盐车安全抵达，要塞市场短暂安稳下来。' },
+  ],
+  oasis: [
+    { id: 'blue-tent', name: '蓝帐密市', goodIds: ['spice', 'silk', 'map'], factor: 0.78, pressure: 1, text: '蓝帐后的密市开门，便宜是真便宜，盯梢也是真多。' },
+    { id: 'mirror-route', name: '镜井占路', goodIds: ['pearl', 'moon', 'map'], factor: 1.22, pressure: -1, text: '镜井水面映出新路线，密探们愿意为稀有线索加价。' },
+  ],
+  academy: [
+    { id: 'exam-week', name: '炼金考周', goodIds: ['crystal', 'scroll', 'ink'], factor: 1.25, pressure: 0, text: '导师和学徒挤满材料窗，知识与魔法货物卖得飞快。' },
+    { id: 'archive-dust', name: '旧档除尘', goodIds: ['scroll', 'ink', 'map'], factor: 0.82, pressure: -1, text: '学院清理旧档，重复卷轴和墨水被成捆放出。' },
+  ],
+  ruins: [
+    { id: 'hunter-rush', name: '猎盟集结', goodIds: ['herb', 'grain', 'pearl'], factor: 1.3, pressure: 2, text: '遗迹猎人临时集结，补给和护身货物被扫得很空。' },
+    { id: 'quiet-door', name: '石门静默', goodIds: ['relic', 'dragonbone', 'map'], factor: 0.86, pressure: -1, text: '旧石门今日罕见安静，猎人愿意把重复样本换成路费。' },
+  ],
+  forge: [
+    { id: 'furnace-order', name: '炉群接单', goodIds: ['ore', 'mithril', 'crystal'], factor: 1.2, pressure: 1, text: '赤铜炉群同时接单，矿料和稳定法阵材料需求升温。' },
+    { id: 'gear-overrun', name: '齿轮溢仓', goodIds: ['gear', 'candle', 'ore'], factor: 0.8, pressure: -1, text: '试制齿轮做多了，工匠把一批实用品压价处理。' },
+  ],
+}
+
 function createEquipmentInstance(itemId) {
   return { uid: `${itemId}-${Date.now()}-${rand(1000, 9999)}`, itemId }
 }
@@ -729,6 +768,36 @@ function describeRouteCondition(condition) {
   return `${place}路况：${effect.name}，${travel}、${explore}、${danger}。${effect.text}`
 }
 
+function createLocalScene(day, locationId) {
+  const location = locationsById[locationId] ?? LOCATIONS[0]
+  const templates = LOCAL_SCENE_TEMPLATES[location.id] ?? Object.values(LOCAL_SCENE_TEMPLATES).flat()
+  const pool = templates.flatMap((template) => Array.from({ length: template.weight ?? 1 }, () => template))
+  const template = pick(pool.length ? pool : templates)
+  const fallbackGoods = LOCATION_TRAITS[location.id]?.localGoods ?? GOODS.map((good) => good.id)
+  const goodId = pick(template.goodIds ?? fallbackGoods)
+  const factor = Number(clamp(template.factor * dayWave(day, `${location.id}-${template.id}-${goodId}`, 0.06), 0.62, 1.55).toFixed(2))
+  return {
+    id: `${day}-${location.id}-${template.id}-${goodId}`,
+    day,
+    locationId: location.id,
+    sceneId: template.id,
+    name: template.name,
+    goodId,
+    factor,
+    pressure: template.pressure ?? 0,
+    text: template.text,
+  }
+}
+
+function describeLocalScene(scene) {
+  if (!scene) return '今日本地日势平稳。'
+  const location = locationsById[scene.locationId]
+  const good = goodsById[scene.goodId]
+  const move = scene.factor > 1.04 ? '走强' : scene.factor < 0.96 ? '走低' : '平稳'
+  const pressure = scene.pressure > 0 ? `风险压力 +${scene.pressure}` : scene.pressure < 0 ? `风险压力 ${scene.pressure}` : '风险压力不变'
+  return `本地日势：${location?.name ?? '本地'} - ${scene.name}，${good?.name ?? '货物'}${move}。${scene.text} ${pressure}。`
+}
+
 function createWorldNews(day) {
   const location = pick(LOCATIONS)
   const trait = LOCATION_TRAITS[location.id]
@@ -760,6 +829,7 @@ function advanceDay(game, nextDay, locationId = game.location) {
     rumors: createRumors(nextDay, passives.rumorBonus),
     commissions: createCommissions(locationId, nextDay),
     routeCondition: createRouteCondition(nextDay, locationId),
+    localScene: createLocalScene(nextDay, locationId),
   }
   if (nextDay % 7 === 0) updates.worldNews = createWorldNews(nextDay)
   return updates
@@ -833,7 +903,7 @@ function describeRumor(rumor) {
   return `明日风向：${location.name}的${good.name}${verb}。`
 }
 
-function rollMarket(locationId, rumors = [], worldNews = []) {
+function rollMarket(locationId, rumors = [], worldNews = [], localScene = null) {
   const market = Object.fromEntries(GOODS.map((good) => [good.id, Number((0.72 + Math.random() * 0.58).toFixed(2))]))
   const specialCount = rand(1, 3)
   const specialGoods = [...GOODS].sort(() => Math.random() - 0.5).slice(0, specialCount)
@@ -852,6 +922,9 @@ function rollMarket(locationId, rumors = [], worldNews = []) {
     .forEach((news) => {
       market[news.goodId] = Number(clamp((market[news.goodId] ?? 1) * news.factor, 0.42, 1.95).toFixed(2))
     })
+  if (localScene?.locationId === locationId && localScene.goodId) {
+    market[localScene.goodId] = Number(clamp((market[localScene.goodId] ?? 1) * localScene.factor, 0.42, 1.95).toFixed(2))
+  }
   return market
 }
 
@@ -917,6 +990,7 @@ function createInitialGame() {
   const worldNews = createWorldNews(1)
   const commissions = createCommissions(startLocation.id, 1)
   const routeCondition = createRouteCondition(1, startLocation.id)
+  const localScene = createLocalScene(1, startLocation.id)
 
   return {
     version: VERSION,
@@ -933,10 +1007,11 @@ function createInitialGame() {
     inventory,
     equipmentOwned: [],
     equipped: { weapon: null, armor: null, trinket: null },
-    market: rollMarket(startLocation.id, rumors, worldNews),
+    market: rollMarket(startLocation.id, rumors, worldNews, localScene),
     rumors,
     worldNews,
     routeCondition,
+    localScene,
     commissions,
     factions: createInitialFactions(),
     guild: createInitialGuild(),
@@ -975,6 +1050,7 @@ function createInitialGame() {
       `第 1 天：本局开局：你从${startLocation.name}出发，背景是“${background.name}”。`,
       `第 1 天：身份影响：${describeBackground(background)}。起始货物：${describeInventory(inventory)}。${background.text}`,
       `第 1 天：${describeRouteCondition(routeCondition)}`,
+      `第 1 天：${describeLocalScene(localScene)}`,
       ...worldNews.map((news) => `第 1 天：${describeWorldNews(news)}`),
       ...rumors.map((rumor) => `第 1 天：${describeRumor(rumor)}`),
       ...START_LOG.slice(1).map((entry) => `第 1 天：${entry}`),
@@ -1066,6 +1142,7 @@ function getTodayFocus(game) {
     route,
     pressureText,
     condition: getRouteConditionEffect(game.routeCondition).name,
+    localScene: game.localScene?.name ?? '平稳市面',
     commission: commission ? `${commissionLabels[commission.type]}：${commission.text}` : '今日暂无委托',
     mastery: `本地熟练度 ${getMasteryLevel(game, game.location)} 级`,
   }
@@ -1618,6 +1695,7 @@ function encodeSave(game) {
     rumors: game.rumors,
     worldNews: game.worldNews,
     routeCondition: game.routeCondition,
+    localScene: game.localScene,
     commissions: game.commissions,
     factions: game.factions,
     guild: game.guild,
@@ -1650,6 +1728,7 @@ function decodeSave(text) {
     rumors: Array.isArray(payload.rumors) ? payload.rumors : createRumors(payload.day ?? 1),
     worldNews: Array.isArray(payload.worldNews) ? payload.worldNews : createWorldNews(payload.day ?? 1),
     routeCondition: payload.routeCondition ?? createRouteCondition(payload.day ?? 1, payload.location),
+    localScene: payload.localScene ?? createLocalScene(payload.day ?? 1, payload.location),
     commissions: Array.isArray(payload.commissions) ? payload.commissions : createCommissions(payload.location, payload.day ?? 1),
     factions,
     guild: normalizeGuild(payload.guild),
@@ -1766,21 +1845,22 @@ function App() {
       const dayUpdates = advanceDay(current, current.day + 1, locationId)
       const newsText = dayUpdates.worldNews ? ` ${dayUpdates.worldNews.map(describeWorldNews).join(' ')}` : ''
       const routeText = ` ${describeRouteCondition(dayUpdates.routeCondition)}`
+      const sceneText = ` ${describeLocalScene(dayUpdates.localScene)}`
       const moved = addLog(
         awardGuild(addLocationMastery({
           ...current,
           ...dayUpdates,
           location: locationId,
           gold: current.gold - travelCost,
-          market: rollMarket(locationId, dayUpdates.rumors, dayUpdates.worldNews ?? current.worldNews ?? []),
-          riskPressure: clamp((current.riskPressure ?? 0) + destination.risk + conditionEffect.pressure - Math.floor(getTotals(current).reputation / 5), 0, 24),
+          market: rollMarket(locationId, dayUpdates.rumors, dayUpdates.worldNews ?? current.worldNews ?? [], dayUpdates.localScene),
+          riskPressure: clamp((current.riskPressure ?? 0) + destination.risk + conditionEffect.pressure + (dayUpdates.localScene?.pressure ?? 0) - Math.floor(getTotals(current).reputation / 5), 0, 24),
           stats: {
             ...current.stats,
             travels: current.stats.travels + 1,
             extremeSurvivals: (current.stats.extremeSurvivals ?? 0) + (destination.risk >= 5 ? 1 : 0),
           },
         }, locationId, 'explores', 1), 'explore', 14 + destination.risk * 3),
-        `第 ${current.day + 1} 天，你抵达${destination.name}，支付路费 ${travelCost} 金币。${assist?.type === 'route' ? ' 同行协助替你压低了一段路费。' : ''}${routeText}${newsText}`,
+        `第 ${current.day + 1} 天，你抵达${destination.name}，支付路费 ${travelCost} 金币。${assist?.type === 'route' ? ' 同行协助替你压低了一段路费。' : ''}${routeText}${sceneText}${newsText}`,
       )
       return maybePartnerEvent(applyEvent(moved, createTravelEvent(current, destination, current.routeCondition)))
     })
@@ -1801,20 +1881,21 @@ function App() {
       const dayUpdates = advanceDay(current, current.day + 1, current.location)
       const newsText = dayUpdates.worldNews ? ` ${dayUpdates.worldNews.map(describeWorldNews).join(' ')}` : ''
       const routeText = ` ${describeRouteCondition(dayUpdates.routeCondition)}`
+      const sceneText = ` ${describeLocalScene(dayUpdates.localScene)}`
       const explored = addLog(
         awardGuild(addLocationMastery({
           ...current,
           ...dayUpdates,
           gold: current.gold - exploreCost,
-          market: rollMarket(current.location, dayUpdates.rumors, dayUpdates.worldNews ?? current.worldNews ?? []),
-          riskPressure: clamp((current.riskPressure ?? 0) + location.risk + 1 + conditionEffect.pressure - getMasteryLevel(current, current.location), 0, 24),
+          market: rollMarket(current.location, dayUpdates.rumors, dayUpdates.worldNews ?? current.worldNews ?? [], dayUpdates.localScene),
+          riskPressure: clamp((current.riskPressure ?? 0) + location.risk + 1 + conditionEffect.pressure + (dayUpdates.localScene?.pressure ?? 0) - getMasteryLevel(current, current.location), 0, 24),
           stats: {
             ...current.stats,
             explores: (current.stats.explores ?? 0) + 1,
             extremeSurvivals: (current.stats.extremeSurvivals ?? 0) + (location.risk >= 5 ? 1 : 0),
           },
         }, current.location, 'explores', 1), 'explore', 18 + location.risk * 4),
-        `第 ${current.day + 1} 天，你花费 ${exploreCost} 金币探索${location.name}。${assist?.type === 'scout' ? ' 同伴提前探路，补给消耗降低。' : ''}${routeText}${newsText}`,
+        `第 ${current.day + 1} 天，你花费 ${exploreCost} 金币探索${location.name}。${assist?.type === 'scout' ? ' 同伴提前探路，补给消耗降低。' : ''}${routeText}${sceneText}${newsText}`,
       )
       return maybePartnerEvent(applyEvent(explored, createExploreEvent(current, current.routeCondition)))
     })
@@ -2273,6 +2354,7 @@ function App() {
         <strong>高价货：{todayFocus.bestGoods}</strong>
         <strong>路线：{todayFocus.route} · {todayFocus.mastery}</strong>
         <strong>路况：{todayFocus.condition}</strong>
+        <strong>日势：{todayFocus.localScene}</strong>
         <strong>风险：{todayFocus.pressureText}</strong>
         <strong>{todayFocus.commission}</strong>
       </section>
@@ -2428,6 +2510,7 @@ function App() {
             <PanelTitle kicker="情报" title="明日风向" />
             <div className="rumor-list">
               <span>{describeRouteCondition(game.routeCondition)}</span>
+              <span>{describeLocalScene(game.localScene)}</span>
               {(game.rumors ?? []).map((rumor) => <span key={rumor.id}>{describeRumor(rumor)}</span>)}
               {(game.worldNews ?? []).map((news) => <span key={news.id}>{describeWorldNews(news)}</span>)}
             </div>
