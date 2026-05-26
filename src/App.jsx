@@ -128,6 +128,7 @@ const ACHIEVEMENTS = [
   { id: 'campPlanner', name: '夜营老手', text: '执行 10 次夜营策略。', test: (s) => (s.stats.campActions ?? 0) >= 10 },
   { id: 'stallCloser', name: '摊位快手', text: '成交 8 次每日市集摊位。', test: (s) => (s.stats.marketOffersDone ?? 0) >= 8 },
   { id: 'stallRegular', name: '熟摊照面', text: '任意摊主信任达到 5。', test: (s) => Object.values(s.stallRelations ?? {}).some((rel) => (rel.trust ?? 0) >= 5) },
+  { id: 'timekeeper', name: '行程账本', text: '累计记录 300 秒行动耗时。', test: (s) => (s.elapsedSeconds ?? s.stats.timeSpent ?? 0) >= 300 },
   { id: 'profiteer', name: '算盘响亮', text: '累计净收入达到 2000。', test: (s) => s.stats.profit >= 2000 },
   { id: 'longRun', name: '三十日商路', text: '坚持到第 30 天。', test: (s) => s.day >= 30 },
   { id: 'firstBond', name: '第一次心动', text: '结识第一位人物。', test: (s) => (s.knownNpcIds?.length ?? 0) >= 1 },
@@ -965,6 +966,7 @@ function normalizeStats(baseStats, stats = {}) {
     campActions: stats.campActions ?? 0,
     companionMoments: stats.companionMoments ?? 0,
     marketOffersDone: stats.marketOffersDone ?? 0,
+    timeSpent: stats.timeSpent ?? 0,
     pressureCleared: stats.pressureCleared ?? 0,
     npcQuests: stats.npcQuests ?? 0,
     landmarksFound: stats.landmarksFound ?? 0,
@@ -1256,6 +1258,66 @@ function describeWorldNews(news) {
   return news.text
 }
 
+function formatElapsedTime(seconds = 0) {
+  const safe = Math.max(0, Math.floor(seconds))
+  const hours = Math.floor(safe / 3600)
+  const minutes = Math.floor((safe % 3600) / 60)
+  const rest = safe % 60
+  if (hours > 0) return `${hours}时${String(minutes).padStart(2, '0')}分${String(rest).padStart(2, '0')}秒`
+  if (minutes > 0) return `${minutes}分${String(rest).padStart(2, '0')}秒`
+  return `${rest}秒`
+}
+
+function withActionTime(text, seconds) {
+  const safe = clamp(Math.round(Number(seconds) || 0), 0, 10)
+  if (!safe) return text
+  const trimmed = String(text).trim()
+  return `${trimmed}${/[。！？]$/.test(trimmed) ? '' : '。'}耗时 ${safe} 秒。`
+}
+
+function spendTime(game, seconds) {
+  const safe = clamp(Math.round(Number(seconds) || 0), 0, 10)
+  return {
+    ...game,
+    elapsedSeconds: (game.elapsedSeconds ?? 0) + safe,
+    lastActionSeconds: safe,
+    stats: { ...(game.stats ?? {}), timeSpent: (game.stats?.timeSpent ?? 0) + safe },
+  }
+}
+
+function getActionSeconds(game, kind, context = {}) {
+  const location = locationsById[context.locationId ?? game.location] ?? LOCATIONS[0]
+  const condition = getRouteConditionEffect(context.routeCondition ?? game.routeCondition)
+  const scene = context.localScene ?? game.localScene
+  if (kind === 'trade') return context.amount >= 5 ? 2 : 1
+  if (kind === 'marketOffer') return clamp(3 + ((context.amount ?? 0) > 3 ? 1 : 0), 0, 5)
+  if (kind === 'travel') {
+    const modifier = (condition.travelCost > 1.04 || condition.danger > 0.03 ? 1 : 0) - (condition.travelCost < 0.98 || condition.danger < -0.03 ? 1 : 0)
+    return clamp(4 + location.risk + modifier, 4, 10)
+  }
+  if (kind === 'explore') {
+    const modifier = (condition.exploreCost > 1.04 || condition.danger > 0.03 ? 1 : 0) + (scene?.pressure > 0 ? 1 : 0) - (condition.exploreCost < 0.98 || scene?.pressure < 0 ? 1 : 0)
+    return clamp(5 + location.risk + modifier, 5, 10)
+  }
+  if (kind === 'commission') {
+    if (context.type === 'survey') return clamp(5 + location.risk, 0, 10)
+    if (context.type === 'bounty') return 0
+    return clamp(3 + (location.risk >= 4 ? 2 : location.risk >= 2 ? 1 : 0), 3, 5)
+  }
+  if (kind === 'routeAccept') return 1
+  if (kind === 'routeComplete') return clamp(4 + Math.ceil(location.risk / 2), 4, 7)
+  if (kind === 'routeAbandon') return 2
+  if (kind === 'camp') return clamp(6 + Math.ceil(location.risk / 2) + (context.route === 'combat' ? 1 : 0), 6, 10)
+  if (kind === 'rest') return clamp(8 + Math.floor(location.risk / 3), 8, 10)
+  if (kind === 'social') return ['date', 'quest', 'marry'].includes(context.action) ? rand(6, 10) : rand(2, 5)
+  if (kind === 'combat') {
+    if (context.action === 'heal') return 2
+    if (context.action === 'escape') return rand(3, 5)
+    return rand(2, 4)
+  }
+  return 0
+}
+
 function advanceDay(game, nextDay, locationId = game.location) {
   const passives = getEquipmentPassives(game)
   const updates = {
@@ -1306,7 +1368,7 @@ function parseLogEntry(entry) {
 function achievementCategory(achievement) {
   if (['firstBond', 'warmHeart', 'confession', 'firstMarriage', 'manyLoves', 'dates', 'giftGiver', 'companionRoad', 'companionMoments', 'personalQuests'].includes(achievement.id)) return '人物'
   if (['fighter', 'veteran', 'rareHunter', 'extremeRoad', 'firstLandmark', 'landmarkAtlas'].includes(achievement.id)) return '冒险'
-  if (['explorer', 'deepExplorer', 'connected', 'longRun', 'streetwise', 'campPlanner'].includes(achievement.id)) return '旅途'
+  if (['explorer', 'deepExplorer', 'connected', 'longRun', 'streetwise', 'campPlanner', 'timekeeper'].includes(achievement.id)) return '旅途'
   if (['factionFriend', 'alliedNetwork'].includes(achievement.id)) return '势力'
   if (['stallRegular'].includes(achievement.id)) return '交易'
   return '经营'
@@ -1451,6 +1513,8 @@ function createInitialGame() {
   return {
     version: VERSION,
     day: 1,
+    elapsedSeconds: 0,
+    lastActionSeconds: 0,
     location: startLocation.id,
     gold,
     hp: baseMaxHp,
@@ -1512,6 +1576,7 @@ function createInitialGame() {
       campActions: 0,
       companionMoments: 0,
       marketOffersDone: 0,
+      timeSpent: 0,
     },
     achievements: [],
     log: [
@@ -1610,10 +1675,12 @@ function getTodayFocus(game) {
   const commission = (game.commissions ?? [])[0]
   const offerHolder = game.marketOffer ? resolveStallholder(game.marketOffer, game.location) : null
   const offerTier = offerHolder ? getStallTrustTier(game, offerHolder.id) : null
+  const lastSeconds = game.lastActionSeconds ?? 0
   return {
     bestGoods,
     route,
     pressureText,
+    elapsed: `累计 ${formatElapsedTime(game.elapsedSeconds ?? 0)}${lastSeconds ? ` · 上次 ${lastSeconds}秒` : ''}`,
     camp: game.campUsedDay === game.day ? '夜营已安排' : '夜营待安排',
     condition: getRouteConditionEffect(game.routeCondition).name,
     localScene: game.localScene?.name ?? '平稳市面',
@@ -1622,6 +1689,37 @@ function getTodayFocus(game) {
     commission: commission ? `${commissionLabels[commission.type]}：${commission.text}` : '今日暂无委托',
     contract: getRouteContractFocus(game),
     mastery: `本地熟练度 ${getMasteryLevel(game, game.location)} 级 · ${getFactionFavor(game).tier?.name ?? '普通往来'}`,
+  }
+}
+
+function getTimeLedger(game) {
+  const elapsed = game.elapsedSeconds ?? game.stats?.timeSpent ?? 0
+  const days = Math.max(1, game.day ?? 1)
+  const countedActions = [
+    game.stats?.trades ?? 0,
+    game.stats?.travels ?? 0,
+    game.stats?.explores ?? 0,
+    game.stats?.socialActions ?? 0,
+    game.stats?.campActions ?? 0,
+    game.stats?.marketOffersDone ?? 0,
+    game.stats?.commissionsDone ?? 0,
+    game.stats?.routeContractsDone ?? 0,
+    game.stats?.localLeadsFollowed ?? 0,
+    game.stats?.battlesWon ?? 0,
+  ].reduce((sum, value) => sum + value, 0)
+  const average = elapsed ? Math.round(elapsed / days) : 0
+  const pace = elapsed <= 0 ? '尚未开账'
+    : average >= 45 ? '慢火经营'
+      : average >= 24 ? '稳扎稳打'
+        : '快马跑商'
+  const density = countedActions ? `${formatElapsedTime(Math.round(elapsed / countedActions))}/次` : '暂无动作'
+  return {
+    elapsed: formatElapsedTime(elapsed),
+    average: formatElapsedTime(average),
+    last: (game.lastActionSeconds ?? 0) ? `${game.lastActionSeconds} 秒` : '暂无',
+    pace,
+    density,
+    countedActions,
   }
 }
 
@@ -2295,6 +2393,8 @@ function encodeSave(game) {
   const payload = {
     version: VERSION,
     day: game.day,
+    elapsedSeconds: game.elapsedSeconds ?? 0,
+    lastActionSeconds: game.lastActionSeconds ?? 0,
     location: game.location,
     gold: game.gold,
     hp: game.hp,
@@ -2347,6 +2447,8 @@ function decodeSave(text) {
     ...base,
     ...payload,
     ...normalizedEquipment,
+    elapsedSeconds: payload.elapsedSeconds ?? 0,
+    lastActionSeconds: payload.lastActionSeconds ?? 0,
     rumors: Array.isArray(payload.rumors) ? payload.rumors : createRumors(payload.day ?? 1),
     worldNews: Array.isArray(payload.worldNews) ? payload.worldNews : createWorldNews(payload.day ?? 1),
     routeCondition: payload.routeCondition ?? createRouteCondition(payload.day ?? 1, payload.location),
@@ -2387,6 +2489,7 @@ function App() {
   const latestEvent = game.log.find((entry) => !String(entry).includes('成就解锁：')) ?? game.log[0]
   const logGroups = useMemo(() => groupLogsByDay(game.log ?? []), [game.log])
   const todayFocus = useMemo(() => getTodayFocus(game), [game])
+  const timeLedger = useMemo(() => getTimeLedger(game), [game])
   const currentDiscoveries = getDiscoveredLandmarks(game, game.location)
   const currentDiscoveryTotal = landmarksByLocation[game.location]?.length ?? 0
   const marketOfferQuote = getMarketOfferQuote(game)
@@ -2420,8 +2523,9 @@ function App() {
       const free = getTotals(current).capacity - getCargoUsed(current)
       if (current.gold < price) return addLog(current, `金币不足，无法买入 ${amount} 件${good.name}。`)
       if (free < good.weight * amount) return addLog(current, `货舱空间不足，无法装下 ${amount} 件${good.name}。`)
+      const seconds = getActionSeconds(current, 'trade', { amount })
       return addTaggedLog(
-        awardGuild(addLocationMastery({
+        spendTime(awardGuild(addLocationMastery({
           ...current,
           gold: current.gold - price,
           inventory: { ...current.inventory, [goodId]: (current.inventory[goodId] ?? 0) + amount },
@@ -2431,9 +2535,9 @@ function App() {
             goodsMoved: current.stats.goodsMoved + amount,
             profit: current.stats.profit - price,
           },
-        }, current.location, 'trades', amount), 'trade', Math.max(4, Math.round(price / 35))),
+        }, current.location, 'trades', amount), 'trade', Math.max(4, Math.round(price / 35))), seconds),
         '交易',
-        `买入 ${amount} 件${good.name}，花费 ${price} 金币。`,
+        withActionTime(`买入 ${amount} 件${good.name}，花费 ${price} 金币。`, seconds),
       )
     })
   }
@@ -2445,8 +2549,9 @@ function App() {
       const good = goodsById[goodId]
       if (have < amount) return addLog(current, `${good.name}库存不足，无法出售。`)
       const revenue = getPrice(current, goodId, 'sell') * amount
+      const seconds = getActionSeconds(current, 'trade', { amount })
       return addTaggedLog(
-        awardGuild(addLocationMastery({
+        spendTime(awardGuild(addLocationMastery({
           ...current,
           gold: current.gold + revenue,
           inventory: { ...current.inventory, [goodId]: have - amount },
@@ -2457,9 +2562,9 @@ function App() {
             goodsMoved: current.stats.goodsMoved + amount,
             profit: current.stats.profit + revenue,
           },
-        }, current.location, 'trades', amount), 'trade', Math.max(5, Math.round(revenue / 30))),
+        }, current.location, 'trades', amount), 'trade', Math.max(5, Math.round(revenue / 30))), seconds),
         '交易',
-        `卖出 ${amount} 件${good.name}，收入 ${revenue} 金币。`,
+        withActionTime(`卖出 ${amount} 件${good.name}，收入 ${revenue} 金币。`, seconds),
       )
     })
   }
@@ -2486,6 +2591,7 @@ function App() {
         },
       }
       const trustNote = nextTrust > previousTrust ? ` ${holder.name}对你的信任提升到 ${nextTrust}。` : ` ${holder.name}记下了这笔熟客账。`
+      const seconds = getActionSeconds(current, 'marketOffer', { amount: trustedOffer.amount })
       const offerStats = {
         ...current.stats,
         trades: current.stats.trades + 1,
@@ -2499,23 +2605,23 @@ function App() {
         if (current.gold < quote.total) return addTaggedLog(current, '摊位', `${trustedOffer.title}需要 ${quote.total} 金币。`)
         if (free < need) return addTaggedLog(current, '摊位', `${trustedOffer.title}需要 ${need} 货舱空间，当前只剩 ${free}。`)
         return addTaggedLog(
-          awardGuild(addLocationMastery({
+          spendTime(awardGuild(addLocationMastery({
             ...current,
             gold: current.gold - quote.total,
             inventory: { ...current.inventory, [trustedOffer.goodId]: (current.inventory[trustedOffer.goodId] ?? 0) + trustedOffer.amount },
             marketOffer: null,
             stallRelations: nextStallRelations,
             stats: { ...offerStats, profit: current.stats.profit - quote.total },
-          }, current.location, 'trades', trustedOffer.amount), 'trade', Math.max(8, Math.round(quote.total / 28))),
+          }, current.location, 'trades', trustedOffer.amount), 'trade', Math.max(8, Math.round(quote.total / 28))), seconds),
           '摊位',
-          `你在${location.name}成交${holder.name}的${trustedOffer.title}，买下 ${quote.good.name} ×${trustedOffer.amount}，花费 ${quote.total} 金币。${trustNote}`,
+          withActionTime(`你在${location.name}成交${holder.name}的${trustedOffer.title}，买下 ${quote.good.name} ×${trustedOffer.amount}，花费 ${quote.total} 金币。${trustNote}`, seconds),
         )
       }
 
       const have = current.inventory[trustedOffer.goodId] ?? 0
       if (have < trustedOffer.amount) return addTaggedLog(current, '摊位', `${trustedOffer.title}需要 ${quote.good.name} ×${trustedOffer.amount}，当前只有 ${have}。`)
       return addTaggedLog(
-        awardGuild(addLocationMastery({
+        spendTime(awardGuild(addLocationMastery({
           ...current,
           gold: current.gold + quote.total,
           inventory: { ...current.inventory, [trustedOffer.goodId]: have - trustedOffer.amount },
@@ -2523,9 +2629,9 @@ function App() {
           marketOffer: null,
           stallRelations: nextStallRelations,
           stats: { ...offerStats, profit: current.stats.profit + quote.total },
-        }, current.location, 'trades', trustedOffer.amount), 'trade', Math.max(9, Math.round(quote.total / 24))),
+        }, current.location, 'trades', trustedOffer.amount), 'trade', Math.max(9, Math.round(quote.total / 24))), seconds),
         '摊位',
-        `你在${location.name}接下${holder.name}的${trustedOffer.title}，卖出 ${quote.good.name} ×${trustedOffer.amount}，收入 ${quote.total} 金币。${trustNote}`,
+        withActionTime(`你在${location.name}接下${holder.name}的${trustedOffer.title}，卖出 ${quote.good.name} ×${trustedOffer.amount}，收入 ${quote.total} 金币。${trustNote}`, seconds),
       )
     })
   }
@@ -2543,6 +2649,7 @@ function App() {
       const costFactor = Math.max(0.62, (assist?.type === 'route' ? 0.8 : 1) - passives.routeDiscount - guildBonuses.routeDiscount - masteryDiscount - factionFavor.tradeBonus)
       const travelCost = Math.max(6, Math.round((Math.round(destination.cost * 0.82) + Math.max(0, destination.risk - getTotals(current).reputation) * 2) * costFactor * conditionEffect.travelCost))
       if (current.gold < travelCost) return addLog(current, `前往${destination.name}至少需要 ${travelCost} 金币路费。`)
+      const seconds = getActionSeconds(current, 'travel', { locationId, routeCondition: current.routeCondition })
       const dayUpdates = advanceDay(current, current.day + 1, locationId)
       const newsText = dayUpdates.worldNews ? ` ${dayUpdates.worldNews.map(describeWorldNews).join(' ')}` : ''
       const routeText = ` ${describeRouteCondition(dayUpdates.routeCondition)}`
@@ -2550,7 +2657,7 @@ function App() {
       const leadText = ` ${describeLocalLead(dayUpdates.localLead)}`
       const moved = addLog(
         awardGuild(addLocationMastery({
-          ...current,
+          ...spendTime(current, seconds),
           ...dayUpdates,
           location: locationId,
           gold: current.gold - travelCost,
@@ -2558,11 +2665,12 @@ function App() {
           riskPressure: clamp((current.riskPressure ?? 0) + destination.risk + conditionEffect.pressure + (dayUpdates.localScene?.pressure ?? 0) - Math.floor(getTotals(current).reputation / 5) - factionFavor.pressureRelief, 0, 24),
           stats: {
             ...current.stats,
+            timeSpent: (current.stats.timeSpent ?? 0) + seconds,
             travels: current.stats.travels + 1,
             extremeSurvivals: (current.stats.extremeSurvivals ?? 0) + (destination.risk >= 5 ? 1 : 0),
           },
         }, locationId, 'explores', 1), 'explore', 14 + destination.risk * 3),
-        `第 ${current.day + 1} 天，你抵达${destination.name}，支付路费 ${travelCost} 金币。${assist?.type === 'route' ? ' 同行协助替你压低了一段路费。' : ''}${routeText}${sceneText}${leadText}${newsText}`,
+        withActionTime(`第 ${current.day + 1} 天，你抵达${destination.name}，支付路费 ${travelCost} 金币。${assist?.type === 'route' ? ' 同行协助替你压低了一段路费。' : ''}${routeText}${sceneText}${leadText}${newsText}`, seconds),
       )
       const traveled = applyEvent(moved, createTravelEvent(current, destination, current.routeCondition))
       const incident = createRouteContractIncident(current, destination, current.routeCondition)
@@ -2585,6 +2693,7 @@ function App() {
       const costFactor = Math.max(0.58, (assist?.type === 'scout' ? 0.78 : 1) - passives.exploreDiscount - guildBonuses.exploreDiscount - masteryDiscount - factionFavor.tradeBonus)
       const exploreCost = Math.max(10, Math.round((12 + location.risk * 8 - getTotals(current).reputation) * costFactor * conditionEffect.exploreCost))
       if (current.gold < exploreCost) return addLog(current, `探索${location.name}需要 ${exploreCost} 金币准备补给。`)
+      const seconds = getActionSeconds(current, 'explore', { locationId: current.location, routeCondition: current.routeCondition, localScene: current.localScene })
       const dayUpdates = advanceDay(current, current.day + 1, current.location)
       const newsText = dayUpdates.worldNews ? ` ${dayUpdates.worldNews.map(describeWorldNews).join(' ')}` : ''
       const routeText = ` ${describeRouteCondition(dayUpdates.routeCondition)}`
@@ -2592,18 +2701,19 @@ function App() {
       const leadText = ` ${describeLocalLead(dayUpdates.localLead)}`
       const explored = addLog(
         awardGuild(addLocationMastery({
-          ...current,
+          ...spendTime(current, seconds),
           ...dayUpdates,
           gold: current.gold - exploreCost,
           market: rollMarket(current.location, dayUpdates.rumors, dayUpdates.worldNews ?? current.worldNews ?? [], dayUpdates.localScene),
           riskPressure: clamp((current.riskPressure ?? 0) + location.risk + 1 + conditionEffect.pressure + (dayUpdates.localScene?.pressure ?? 0) - getMasteryLevel(current, current.location) - factionFavor.pressureRelief, 0, 24),
           stats: {
             ...current.stats,
+            timeSpent: (current.stats.timeSpent ?? 0) + seconds,
             explores: (current.stats.explores ?? 0) + 1,
             extremeSurvivals: (current.stats.extremeSurvivals ?? 0) + (location.risk >= 5 ? 1 : 0),
           },
         }, current.location, 'explores', 1), 'explore', 18 + location.risk * 4),
-        `第 ${current.day + 1} 天，你花费 ${exploreCost} 金币探索${location.name}。${assist?.type === 'scout' ? ' 同伴提前探路，补给消耗降低。' : ''}${routeText}${sceneText}${leadText}${newsText}`,
+        withActionTime(`第 ${current.day + 1} 天，你花费 ${exploreCost} 金币探索${location.name}。${assist?.type === 'scout' ? ' 同伴提前探路，补给消耗降低。' : ''}${routeText}${sceneText}${leadText}${newsText}`, seconds),
       )
       const withEvent = applyEvent(explored, createExploreEvent(current, current.routeCondition))
       const companionMoment = createCompanionMoment(withEvent, 'explore')
@@ -2658,10 +2768,11 @@ function App() {
     commit((current) => {
       if (current.activeRouteContract) return addTaggedLog(current, '商单', '已有跨城商单在途，先完成或放弃后再接新单。')
       const contract = current.routeContract ?? createRouteContract(current.location, current.day)
+      const seconds = getActionSeconds(current, 'routeAccept')
       return addTaggedLog(
-        { ...current, activeRouteContract: { ...contract, acceptedDay: current.day }, routeContract: null },
+        spendTime({ ...current, activeRouteContract: { ...contract, acceptedDay: current.day }, routeContract: null }, seconds),
         '商单',
-        `接下跨城商单：${describeRouteContract(contract)} 奖励 ${contract.rewardGold} 金币。`,
+        withActionTime(`接下跨城商单：${describeRouteContract(contract)} 奖励 ${contract.rewardGold} 金币。`, seconds),
       )
     })
   }
@@ -2683,7 +2794,8 @@ function App() {
       const rewardGold = Math.round(contract.rewardGold * rewardScale * (late ? 0.45 : 1))
       const factionGain = late ? 0 : 1
       const factionId = contract.factionId
-      const next = awardGuild(addLocationMastery({
+      const seconds = getActionSeconds(current, 'routeComplete', { locationId: contract.targetId })
+      const next = spendTime(awardGuild(addLocationMastery({
         ...current,
         gold: current.gold + rewardGold,
         inventory: { ...current.inventory, [contract.goodId]: have - contract.amount },
@@ -2698,11 +2810,11 @@ function App() {
           routeContractsDone: (current.stats.routeContractsDone ?? 0) + 1,
           factionGain: (current.stats.factionGain ?? 0) + factionGain,
         },
-      }, contract.targetId, 'trades', contract.amount), 'trade', late ? 16 : 36 + contract.amount * 8)
+      }, contract.targetId, 'trades', contract.amount), 'trade', late ? 16 : 36 + contract.amount * 8), seconds)
       return addTaggedLog(
         next,
         '商单',
-        `${late ? '逾期交付' : '完成跨城商单'}：向${target?.name ?? '目的地'}交付 ${good?.name ?? '货物'} ×${contract.amount}，获得 ${rewardGold} 金币${factionGain ? '和目的地势力好感 +1' : '，但逾期未增加势力好感'}。`,
+        withActionTime(`${late ? '逾期交付' : '完成跨城商单'}：向${target?.name ?? '目的地'}交付 ${good?.name ?? '货物'} ×${contract.amount}，获得 ${rewardGold} 金币${factionGain ? '和目的地势力好感 +1' : '，但逾期未增加势力好感'}。`, seconds),
       )
     })
   }
@@ -2713,15 +2825,16 @@ function App() {
       if (!current.activeRouteContract) return current
       const contract = current.activeRouteContract
       const target = locationsById[contract.targetId]
+      const seconds = getActionSeconds(current, 'routeAbandon')
       return addTaggedLog(
-        {
+        spendTime({
           ...current,
           activeRouteContract: null,
           routeContract: createRouteContract(current.location, current.day),
           reputation: Math.max(0, current.reputation - 1),
-        },
+        }, seconds),
         '商单',
-        `放弃发往${target?.name ?? '目的地'}的跨城商单，商路信誉暂时受损，声望 -1。`,
+        withActionTime(`放弃发往${target?.name ?? '目的地'}的跨城商单，商路信誉暂时受损，声望 -1。`, seconds),
       )
     })
   }
@@ -2746,26 +2859,29 @@ function App() {
       if (commission.type === 'delivery') {
         const have = current.inventory[commission.goodId] ?? 0
         if (have < commission.amount) return addLog(current, `委托尚未完成：需要 ${goodsById[commission.goodId].name} ×${commission.amount}。`)
+        const seconds = getActionSeconds(current, 'commission', { type: commission.type, locationId: commission.locationId })
         return addTaggedLog(
-          rewardBase({ ...current, inventory: { ...current.inventory, [commission.goodId]: have - commission.amount } }, 'trade'),
+          spendTime(rewardBase({ ...current, inventory: { ...current.inventory, [commission.goodId]: have - commission.amount } }, 'trade'), seconds),
           '委托',
-          `完成交货委托，交出 ${goodsById[commission.goodId].name} ×${commission.amount}，获得 ${rewardGold} 金币和本地势力好感。`,
+          withActionTime(`完成交货委托，交出 ${goodsById[commission.goodId].name} ×${commission.amount}，获得 ${rewardGold} 金币和本地势力好感。`, seconds),
         )
       }
 
       if (commission.type === 'survey') {
         if (current.gold < commission.cost) return addLog(current, `委托尚未完成：需要 ${commission.cost} 金币准备费。`)
+        const seconds = getActionSeconds(current, 'commission', { type: commission.type, locationId: commission.locationId })
         return addTaggedLog(
-          rewardBase({ ...current, gold: current.gold - commission.cost, riskPressure: Math.max(0, (current.riskPressure ?? 0) - 2) }, 'explore'),
+          spendTime(rewardBase({ ...current, gold: current.gold - commission.cost, riskPressure: Math.max(0, (current.riskPressure ?? 0) - 2) }, 'explore'), seconds),
           '委托',
-          `完成勘探委托，扣除 ${commission.cost} 金币准备费，获得 ${rewardGold} 金币并降低风险压力。`,
+          withActionTime(`完成勘探委托，扣除 ${commission.cost} 金币准备费，获得 ${rewardGold} 金币并降低风险压力。`, seconds),
         )
       }
 
       if (commission.type === 'social') {
         const npc = npcById[commission.npcId]
         if (!current.relationships?.[commission.npcId]?.met) return addLog(current, `委托尚未完成：需要先结识${npc.name}。`)
-        const withReward = rewardBase(current, 'social')
+        const seconds = getActionSeconds(current, 'commission', { type: commission.type, locationId: commission.locationId })
+        const withReward = spendTime(rewardBase(current, 'social'), seconds)
         return addTaggedLog(
           updateRelationship(withReward, commission.npcId, (rel) => ({
             ...rel,
@@ -2774,7 +2890,7 @@ function App() {
             stage: relationStage({ ...rel, affection: clamp(rel.affection + 8, 0, 100) }),
           })),
           '委托',
-          `完成拜访委托，${npc.name}记住了你的周到，获得 ${rewardGold} 金币和好感。`,
+          withActionTime(`完成拜访委托，${npc.name}记住了你的周到，获得 ${rewardGold} 金币和好感。`, seconds),
         )
       }
 
@@ -2891,28 +3007,30 @@ function App() {
       if (current.campUsedDay === current.day) return addTaggedLog(current, '夜营', '今天已经安排过夜营策略，明天再调整。')
       const cost = getCampActionCost(current, action)
       if (current.gold < cost) return addTaggedLog(current, '夜营', `${action.name}需要 ${cost} 金币。`)
+      const seconds = getActionSeconds(current, 'camp', { route: action.route, locationId: current.location })
       const location = locationsById[current.location]
       const campStats = { ...current.stats, campActions: (current.stats.campActions ?? 0) + 1 }
-      const base = {
+      const base = spendTime({
         ...current,
         gold: current.gold - cost,
         campUsedDay: current.day,
         stats: campStats,
-      }
+      }, seconds)
       const campBase = (route = action.route, xp = 10) => awardGuild(addLocationMastery(base, current.location, route === 'combat' ? 'battles' : route === 'social' ? 'social' : route === 'trade' ? 'trades' : 'explores', 1), route, xp)
 
       if (action.id === 'repair') {
         const healed = rand(18, 32) + getMasteryLevel(current, current.location) * 2
         const cleared = Math.min(current.riskPressure ?? 0, 2)
+        const repairCamp = campBase('explore', 14)
         return addTaggedLog(
           {
-            ...campBase('explore', 14),
+            ...repairCamp,
             hp: current.hp + healed,
             riskPressure: Math.max(0, (current.riskPressure ?? 0) - cleared),
-            stats: { ...campStats, pressureCleared: (current.stats.pressureCleared ?? 0) + cleared },
+            stats: { ...repairCamp.stats, pressureCleared: (current.stats.pressureCleared ?? 0) + cleared },
           },
           '夜营',
-          `你在${location.name}补轮整车，花费 ${cost} 金币，恢复 ${healed} 生命${cleared ? `，风险压力 -${cleared}` : ''}。`,
+          withActionTime(`你在${location.name}补轮整车，花费 ${cost} 金币，恢复 ${healed} 生命${cleared ? `，风险压力 -${cleared}` : ''}。`, seconds),
         )
       }
 
@@ -2927,22 +3045,23 @@ function App() {
             market: { ...current.market, [localGoodId]: Number(clamp((current.market[localGoodId] ?? 1) * factor, 0.42, 1.95).toFixed(2)) },
           },
           '夜营',
-          `你摊账听价，花费 ${cost} 金币，刷新明日风向，并小幅试探${goodsById[localGoodId].name}行情。`,
+          withActionTime(`你摊账听价，花费 ${cost} 金币，刷新明日风向，并小幅试探${goodsById[localGoodId].name}行情。`, seconds),
         )
       }
 
       if (action.id === 'watch') {
         const cleared = Math.min(current.riskPressure ?? 0, rand(4, 6))
         const repGain = location.risk >= 4 && Math.random() < 0.35 ? 1 : 0
+        const watchCamp = campBase('combat', 15)
         return addTaggedLog(
           {
-            ...campBase('combat', 15),
+            ...watchCamp,
             reputation: current.reputation + repGain,
             riskPressure: Math.max(0, (current.riskPressure ?? 0) - cleared),
-            stats: { ...campStats, pressureCleared: (current.stats.pressureCleared ?? 0) + cleared },
+            stats: { ...watchCamp.stats, pressureCleared: (current.stats.pressureCleared ?? 0) + cleared },
           },
           '夜营',
-          `你安排轮岗守夜，花费 ${cost} 金币，风险压力 -${cleared}${repGain ? '，严整车队也让声望 +1' : ''}。`,
+          withActionTime(`你安排轮岗守夜，花费 ${cost} 金币，风险压力 -${cleared}${repGain ? '，严整车队也让声望 +1' : ''}。`, seconds),
         )
       }
 
@@ -2951,10 +3070,11 @@ function App() {
       const npc = npcById[npcId]
       const gain = rand(5, 10) + getEquipmentPassives(current).socialBonus
       const metBefore = current.relationships?.[npcId]?.met
+      const socialBase = campBase('social', 15 + gain)
       const socialCamp = updateRelationship(
         {
-          ...campBase('social', 15 + gain),
-          stats: { ...campStats, socialActions: current.stats.socialActions + 1 },
+          ...socialBase,
+          stats: { ...socialBase.stats, socialActions: current.stats.socialActions + 1 },
         },
         npcId,
         (rel) => ({
@@ -2967,7 +3087,7 @@ function App() {
       return addTaggedLog(
         socialCamp,
         '夜营',
-        `你在篝火边备了热汤和晚餐，花费 ${cost} 金币，${metBefore ? `${npc.name}坐近了一些` : `结识了${npc.name}`}。${npc.text} 好感 +${gain}。`,
+        withActionTime(`你在篝火边备了热汤和晚餐，花费 ${cost} 金币，${metBefore ? `${npc.name}坐近了一些` : `结识了${npc.name}`}。${npc.text} 好感 +${gain}。`, seconds),
       )
     })
   }
@@ -2978,16 +3098,17 @@ function App() {
       const location = locationsById[current.location]
       const cost = Math.min(current.gold, Math.max(18, 30 + location.risk * 6 - getMasteryLevel(current, current.location) * 3))
       const healed = rand(18, 34)
+      const seconds = getActionSeconds(current, 'rest', { locationId: current.location })
       return addTaggedLog(
-        awardGuild({
+        spendTime(awardGuild({
           ...current,
           gold: current.gold - cost,
           hp: current.hp + healed,
           riskPressure: Math.max(0, (current.riskPressure ?? 0) - 5),
           stats: { ...current.stats, pressureCleared: (current.stats.pressureCleared ?? 0) + 5 },
-        }, 'explore', 8),
+        }, 'explore', 8), seconds),
         '休整',
-        `你在${location.name}休整车队，花费 ${cost} 金币，恢复 ${healed} 生命，风险压力明显下降。`,
+        withActionTime(`你在${location.name}休整车队，花费 ${cost} 金币，恢复 ${healed} 生命，风险压力明显下降。`, seconds),
       )
     })
   }
@@ -2999,10 +3120,12 @@ function App() {
       let next = { ...current }
       let enemy = { ...current.combat }
       const messages = []
+      let seconds = 0
 
       if (action === 'heal') {
         const herbs = current.inventory.herb ?? 0
         if (!herbs) return addLog(current, '没有银叶药草，无法治疗。')
+        seconds = getActionSeconds(current, 'combat', { action })
         next = {
           ...next,
           hp: clamp(next.hp + 25, 0, player.maxHp),
@@ -3012,11 +3135,13 @@ function App() {
       }
 
       if (action === 'escape') {
-        if (Math.random() < 0.72) return addLog({ ...next, combat: null }, '你抛出烟罐撤离战场，保住了货车。')
+        seconds = getActionSeconds(current, 'combat', { action })
+        if (Math.random() < 0.72) return addLog(spendTime({ ...next, combat: null }, seconds), withActionTime('你抛出烟罐撤离战场，保住了货车。', seconds))
         messages.push('撤离失败，敌人追了上来。')
       }
 
       if (action === 'attack') {
+        seconds = getActionSeconds(current, 'combat', { action })
         const damage = Math.max(3, rand(player.attack - 2, player.attack + 7) - Math.floor(enemy.defense / 2))
         enemy = { ...enemy, hp: enemy.hp - damage }
         messages.push(`你造成 ${damage} 点伤害。`)
@@ -3026,15 +3151,15 @@ function App() {
         const rewards = generateRewards(enemy.risk ?? 1, enemy.gold, enemy.locationId ?? current.location)
         const rewarded = applyRewards(next, rewards)
         return addTaggedLog(
-          awardGuild(addLocationMastery({
+          spendTime(awardGuild(addLocationMastery({
             ...rewarded,
             reputation: rewarded.reputation + enemy.rep,
             combat: null,
             riskPressure: Math.max(0, (rewarded.riskPressure ?? 0) - 2),
             stats: { ...rewarded.stats, battlesWon: rewarded.stats.battlesWon + 1 },
-          }, enemy.locationId ?? current.location, 'battles', 1), 'combat', 24 + (enemy.risk ?? 1) * 5),
+          }, enemy.locationId ?? current.location, 'battles', 1), 'combat', 24 + (enemy.risk ?? 1) * 5), seconds),
           '战斗',
-          `${messages.join(' ')} 击败${enemy.name}，获得 ${describeRewards(rewards)}，以及 ${enemy.rep} 点声望。`,
+          withActionTime(`${messages.join(' ')} 击败${enemy.name}，获得 ${describeRewards(rewards)}，以及 ${enemy.rep} 点声望。`, seconds),
         )
       }
 
@@ -3045,9 +3170,9 @@ function App() {
       const hp = next.hp - incoming
       messages.push(`${enemy.name}反击，造成 ${incoming} 点伤害。${assist?.type === 'guard' ? ' 同伴替你挡下了一部分冲击。' : ''}`)
       if (hp <= 0) {
-        return addLog({ ...next, hp: 0, combat: null, gameOver: true }, `${messages.join(' ')} 你倒在旅途中，本局结束。`)
+        return addLog(spendTime({ ...next, hp: 0, combat: null, gameOver: true }, seconds), withActionTime(`${messages.join(' ')} 你倒在旅途中，本局结束。`, seconds))
       }
-      return addLog({ ...next, hp, combat: enemy }, messages.join(' '))
+      return addLog(spendTime({ ...next, hp, combat: enemy }, seconds), withActionTime(messages.join(' '), seconds))
     })
   }
 
@@ -3066,11 +3191,19 @@ function App() {
           [npcId]: { ...(nextGame.relationships?.[npcId] ?? rel), lastInteractionDay: current.day },
         },
       })
+      const finishSocialLog = (nextGame, message, timedAction = action) => {
+        const seconds = getActionSeconds(current, 'social', { action: timedAction })
+        return markSocial(addLog(spendTime(nextGame, seconds), withActionTime(message, seconds)))
+      }
+      const finishSocialTagged = (nextGame, tag, message, timedAction = action) => {
+        const seconds = getActionSeconds(current, 'social', { action: timedAction })
+        return markSocial(addTaggedLog(spendTime(nextGame, seconds), tag, withActionTime(message, seconds)))
+      }
 
       if (action === 'talk') {
         const gain = rand(6, 10) + getEquipmentPassives(current).socialBonus + getGuildBonuses(current).socialBonus
         const line = npcLine(npc, 'talk', rel)
-        return markSocial(addLog(
+        return finishSocialLog(
           updateRelationship(awardGuild(addLocationMastery({ ...current, stats: socialStats }, current.location, 'social', 1), 'social', 8 + gain), npcId, (nextRel) => ({
             ...nextRel,
             affection: clamp(nextRel.affection + gain, 0, 100),
@@ -3078,7 +3211,7 @@ function App() {
             stage: relationStage({ ...nextRel, affection: clamp(nextRel.affection + gain, 0, 100) }),
           })),
           `${line} 好感 +${gain}。`,
-        ))
+        )
       }
 
       if (action === 'date') {
@@ -3086,7 +3219,7 @@ function App() {
         const gain = (rel.affection >= 70 ? rand(20, 30) : rand(14, 22)) + getEquipmentPassives(current).socialBonus + getGuildBonuses(current).socialBonus
         const line = npcLine(npc, 'date', rel)
         const dayUpdates = advanceDay(current, current.day + 1)
-        return markSocial(addLog(
+        return finishSocialLog(
           updateRelationship(
             awardGuild(addLocationMastery({ ...current, ...dayUpdates, gold: current.gold - cost, stats: { ...socialStats, dates: current.stats.dates + 1 } }, current.location, 'social', 2), 'social', 14 + gain),
             npcId,
@@ -3099,7 +3232,7 @@ function App() {
             }),
           ),
           `${line} 花费 ${cost} 金币，好感 +${gain}。`,
-        ))
+        )
       }
 
       if (action === 'gift') {
@@ -3108,7 +3241,7 @@ function App() {
         const preferred = npc.likes.includes(giftId)
         const gain = (preferred ? rand(16, 25) : rand(7, 12)) + getEquipmentPassives(current).socialBonus + getGuildBonuses(current).socialBonus
         const line = preferred ? npc.lines.giftGood : npc.lines.giftNormal
-        return markSocial(addLog(
+        return finishSocialLog(
           updateRelationship(
             awardGuild(addLocationMastery({
               ...current,
@@ -3125,7 +3258,7 @@ function App() {
             }),
           ),
           `${line} 送出 ${goodsById[giftId].name}，好感 +${gain}。`,
-        ))
+        )
       }
 
       if (action === 'cooperate') {
@@ -3148,7 +3281,7 @@ function App() {
         if (npc.id === 'kael') next = { ...next, hp: next.hp + 18 }
         if (npc.id === 'naya') next = { ...next, reputation: next.reputation + 1 }
         if (npc.id === 'avel') next = { ...next, reputation: next.reputation + 2 }
-        return markSocial(addLog(next, `${npc.cooperate} 你们靠得很近地商量细节，好感 +${gain}。`))
+        return finishSocialLog(next, `${npc.cooperate} 你们靠得很近地商量细节，好感 +${gain}。`)
       }
 
       if (action === 'assist') {
@@ -3162,7 +3295,7 @@ function App() {
           guard: `${npc.name}答应贴身护卫车队，接下来几天战斗伤害会降低。`,
           bargain: `${npc.name}替你出面谈价，接下来几天买卖会更占便宜。`,
         }[type]
-        return markSocial(addLog(
+        return finishSocialLog(
           updateRelationship(
             {
               ...current,
@@ -3179,7 +3312,7 @@ function App() {
             }),
           ),
           `${assistText} 花费 ${cost} 金币，好感 +${gain}。`,
-        ))
+        )
       }
 
       if (action === 'quest') {
@@ -3205,7 +3338,7 @@ function App() {
         }
         if (outcome.rumors) next = { ...next, rumors: createRumors(next.day, getEquipmentPassives(next).rumorBonus) }
         next = awardGuild(addLocationMastery(next, current.location, 'social', 2), 'social', 24 + outcome.gain)
-        return markSocial(addTaggedLog(
+        return finishSocialTagged(
           updateRelationship(next, npcId, (nextRel) => ({
             ...nextRel,
             affection: clamp(nextRel.affection + outcome.gain, 0, 100),
@@ -3214,14 +3347,14 @@ function App() {
           })),
           '人物',
           `${outcome.text} 好感 +${outcome.gain}。`,
-        ))
+        )
       }
 
       if (action === 'confess') {
         if (rel.confessed) return addLog(current, `${npc.name}已经接受过你的表白。`)
         if (rel.affection < 45) return addLog(current, `${npc.name}还在试探你的真心，好感至少 45 才适合表白。`)
         const line = npc.lines.confess
-        return markSocial(addLog(
+        return finishSocialLog(
           updateRelationship({ ...current, stats: socialStats }, npcId, (nextRel) => ({
             ...nextRel,
             confessed: true,
@@ -3230,7 +3363,7 @@ function App() {
             stage: '恋人',
           })),
           line,
-        ))
+        )
       }
 
       if (action === 'marry') {
@@ -3239,14 +3372,14 @@ function App() {
         const cost = 160
         if (current.gold < cost) return addLog(current, `准备婚约和宴席需要 ${cost} 金币。`)
         const line = npc.lines.marry
-        return markSocial(addLog(
+        return finishSocialLog(
           updateRelationship(
             { ...current, gold: current.gold - cost, partners: [...(current.partners ?? []), npcId], stats: socialStats },
             npcId,
             (nextRel) => ({ ...nextRel, married: true, affection: 100, stage: '伴侣', interactions: nextRel.interactions + 1 }),
           ),
           line,
-        ))
+        )
       }
 
       return current
@@ -3291,6 +3424,7 @@ function App() {
           <Stat label="货舱" value={`${cargoUsed}/${totals.capacity}`} />
           <Stat label="商会" value={`${game.guild?.level ?? 1} 级`} />
           <Stat label="风险" value={game.riskPressure ?? 0} />
+          <Stat label="用时" value={formatElapsedTime(game.elapsedSeconds ?? 0)} />
         </div>
       </header>
 
@@ -3321,6 +3455,7 @@ function App() {
         <strong>线索：{todayFocus.localLead}</strong>
         <strong>摊位：{todayFocus.marketOffer}</strong>
         <strong>风险：{todayFocus.pressureText}</strong>
+        <strong>用时：{todayFocus.elapsed}</strong>
         <strong>夜营：{todayFocus.camp}</strong>
         <strong>商单：{todayFocus.contract}</strong>
         <strong>{todayFocus.commission}</strong>
@@ -3724,6 +3859,29 @@ function App() {
       </div>
 
       <div className={`lower-grid ${activeTab === 'records' ? 'is-active' : ''}`}>
+        <section className="panel time-ledger-panel">
+          <PanelTitle kicker="行程" title="行动账本" />
+          <div className="time-ledger-grid">
+            <span>
+              <strong>{timeLedger.elapsed}</strong>
+              <small>累计耗时</small>
+            </span>
+            <span>
+              <strong>{timeLedger.average}</strong>
+              <small>每日均值</small>
+            </span>
+            <span>
+              <strong>{timeLedger.last}</strong>
+              <small>上一动作</small>
+            </span>
+            <span>
+              <strong>{timeLedger.density}</strong>
+              <small>{timeLedger.countedActions} 次已计动作</small>
+            </span>
+          </div>
+          <p className="time-ledger-note">节奏：{timeLedger.pace}。记录买卖、旅行、探索、夜营、委托、人物互动和战斗的体感耗时，方便回看这局商路是急行还是细经营。</p>
+        </section>
+
         <section className="panel save-panel">
           <PanelTitle kicker="存档" title="导入与导出" />
           <div className="save-actions">
