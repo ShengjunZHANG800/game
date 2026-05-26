@@ -36,6 +36,20 @@ h1 {
   line-height: 1.05;
 }
 
+.audio-toggle {
+  margin-top: 12px;
+  padding: 7px 12px;
+  border-color: rgba(132, 197, 255, 0.34);
+  color: #dff1ff;
+  background: rgba(38, 62, 76, 0.72);
+}
+
+.audio-toggle.is-on {
+  border-color: rgba(142, 230, 168, 0.5);
+  color: #f5ffeb;
+  background: rgba(43, 87, 58, 0.82);
+}
+
 h2 {
   color: #fff7df;
   font-size: 20px;

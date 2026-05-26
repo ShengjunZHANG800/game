@@ -641,6 +641,148 @@ const NPC_STORY_ARCS = {
 
 const STORY_ARCS = [MAIN_STORY_ARC, ...Object.values(NPC_STORY_ARCS)]
 
+const AUDIO_SCENES = {
+  market: { name: '市集小调', root: 196, scale: [1, 1.125, 1.25, 1.5, 1.667, 1.5, 1.25, 1.125], tempo: 520, wave: 'triangle', bassEvery: 4, gain: 0.08 },
+  adventure: { name: '荒路行歌', root: 146.83, scale: [1, 1.2, 1.333, 1.5, 1.8, 1.5, 1.333, 1.2], tempo: 620, wave: 'sine', bassEvery: 3, gain: 0.075 },
+  social: { name: '烛边私语', root: 220, scale: [1, 1.125, 1.333, 1.5, 1.667, 1.5, 1.333, 1.125], tempo: 680, wave: 'sine', bassEvery: 4, gain: 0.065 },
+  battle: { name: '短兵鼓点', root: 110, scale: [1, 1.189, 1.333, 1.414, 1.5, 1.414, 1.333, 1.189], tempo: 330, wave: 'sawtooth', bassEvery: 2, gain: 0.09 },
+  story: { name: '旧契回声', root: 174.61, scale: [1, 1.125, 1.26, 1.5, 1.681, 1.5, 1.26, 1.125], tempo: 760, wave: 'triangle', bassEvery: 5, gain: 0.07 },
+  quiet: { name: '账册余音', root: 164.81, scale: [1, 1.125, 1.333, 1.498, 1.681, 1.498, 1.333, 1.125], tempo: 820, wave: 'sine', bassEvery: 4, gain: 0.055 },
+}
+
+const AUDIO_SCENE_BY_TAB = {
+  trade: 'market',
+  adventure: 'adventure',
+  people: 'social',
+  role: 'quiet',
+  equipment: 'market',
+  records: 'story',
+}
+
+const SFX_BY_TAG = {
+  交易: 'coin',
+  摊位: 'coin',
+  委托: 'paper',
+  商单: 'paper',
+  战斗: 'hit',
+  风险: 'warn',
+  秘闻: 'chime',
+  线索: 'chime',
+  人物: 'warm',
+  社交: 'warm',
+  同行: 'warm',
+  篇章: 'story',
+  夜营: 'camp',
+  休整: 'camp',
+}
+
+function getAudioScene(game, activeTab, pendingAction) {
+  if (game.combat || pendingAction?.kind === 'combat') return 'battle'
+  if (pendingAction?.kind === 'story') return 'story'
+  if (['travel', 'explore', 'camp', 'route'].includes(pendingAction?.kind)) return 'adventure'
+  if (pendingAction?.kind === 'social') return 'social'
+  if (['trade', 'equipment'].includes(pendingAction?.kind)) return 'market'
+  return AUDIO_SCENE_BY_TAB[activeTab] ?? 'quiet'
+}
+
+function getEventSound(entry) {
+  const parsed = parseLogEntry(String(entry).replace(/^第\s*\d+\s*天：/, ''))
+  if (String(entry).includes('成就解锁')) return 'chime'
+  return SFX_BY_TAG[parsed.tag] ?? 'tick'
+}
+
+function createAudioEngine() {
+  const AudioContextClass = window.AudioContext ?? window.webkitAudioContext
+  if (!AudioContextClass) return null
+  const context = new AudioContextClass()
+  const master = context.createGain()
+  const bgmGain = context.createGain()
+  const sfxGain = context.createGain()
+  let interval = null
+  let sceneId = 'market'
+  let step = 0
+
+  master.gain.value = 0.22
+  bgmGain.gain.value = 0
+  sfxGain.gain.value = 0.62
+  bgmGain.connect(master)
+  sfxGain.connect(master)
+  master.connect(context.destination)
+
+  const tone = (frequency, duration = 0.18, type = 'sine', gain = 0.12, delay = 0, destination = sfxGain) => {
+    const now = context.currentTime + delay
+    const osc = context.createOscillator()
+    const envelope = context.createGain()
+    osc.type = type
+    osc.frequency.setValueAtTime(frequency, now)
+    envelope.gain.setValueAtTime(0.0001, now)
+    envelope.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), now + 0.025)
+    envelope.gain.exponentialRampToValueAtTime(0.0001, now + duration)
+    osc.connect(envelope)
+    envelope.connect(destination)
+    osc.start(now)
+    osc.stop(now + duration + 0.04)
+  }
+
+  const tick = () => {
+    const scene = AUDIO_SCENES[sceneId] ?? AUDIO_SCENES.market
+    const ratio = scene.scale[step % scene.scale.length]
+    const accent = step % scene.bassEvery === 0
+    const melody = scene.root * ratio * (accent ? 1 : 2)
+    tone(melody, accent ? 0.32 : 0.18, scene.wave, scene.gain, 0, bgmGain)
+    if (accent) tone(scene.root / 2, 0.42, 'sine', scene.gain * 0.85, 0.02, bgmGain)
+    if (sceneId === 'battle' && step % 2 === 0) tone(66, 0.08, 'square', 0.06, 0.01, bgmGain)
+    step += 1
+  }
+
+  const startLoop = () => {
+    if (interval) window.clearInterval(interval)
+    const scene = AUDIO_SCENES[sceneId] ?? AUDIO_SCENES.market
+    bgmGain.gain.cancelScheduledValues(context.currentTime)
+    bgmGain.gain.linearRampToValueAtTime(1, context.currentTime + 0.35)
+    tick()
+    interval = window.setInterval(tick, scene.tempo)
+  }
+
+  return {
+    async start() {
+      await context.resume()
+      startLoop()
+    },
+    setScene(nextScene) {
+      if (!AUDIO_SCENES[nextScene] || nextScene === sceneId) return
+      sceneId = nextScene
+      step = 0
+      if (context.state === 'running') startLoop()
+    },
+    stop() {
+      if (interval) window.clearInterval(interval)
+      interval = null
+      bgmGain.gain.cancelScheduledValues(context.currentTime)
+      bgmGain.gain.linearRampToValueAtTime(0.0001, context.currentTime + 0.18)
+    },
+    playSfx(kind) {
+      if (context.state !== 'running') return
+      const bank = {
+        coin: [[880, 0.08, 'triangle', 0.22, 0], [1320, 0.1, 'triangle', 0.16, 0.07]],
+        paper: [[392, 0.06, 'sine', 0.11, 0], [523.25, 0.08, 'sine', 0.1, 0.06]],
+        hit: [[92, 0.12, 'sawtooth', 0.22, 0], [55, 0.1, 'square', 0.12, 0.06]],
+        warn: [[220, 0.12, 'square', 0.16, 0], [185, 0.16, 'square', 0.14, 0.1]],
+        chime: [[659.25, 0.16, 'sine', 0.15, 0], [987.77, 0.2, 'sine', 0.11, 0.12]],
+        warm: [[329.63, 0.12, 'triangle', 0.14, 0], [493.88, 0.18, 'triangle', 0.1, 0.1]],
+        story: [[261.63, 0.16, 'triangle', 0.14, 0], [392, 0.2, 'triangle', 0.13, 0.12], [523.25, 0.24, 'sine', 0.1, 0.26]],
+        camp: [[196, 0.12, 'sine', 0.12, 0], [246.94, 0.18, 'sine', 0.1, 0.14]],
+        tick: [[440, 0.06, 'sine', 0.08, 0]],
+      }
+      ;(bank[kind] ?? bank.tick).forEach(([frequency, duration, type, gain, delay]) => tone(frequency, duration, type, gain, delay))
+    },
+    destroy() {
+      if (interval) window.clearInterval(interval)
+      context.close()
+    },
+  }
+}
+
 const ROUTE_CONDITIONS = [
   { id: 'clear', name: '晴稳商路', weight: 18, travelCost: 0.92, exploreCost: 0.96, danger: -0.03, pressure: -1, text: '驿站补给充足，车辙干爽，适合赶路和压低消耗。' },
   { id: 'drizzle', name: '细雨泥路', weight: 13, travelCost: 1.1, exploreCost: 1.08, danger: 0.035, pressure: 1, text: '雨水让车轮陷进泥里，旧路和暗巷都更难处理。' },
@@ -2851,7 +2993,10 @@ function App() {
   const [activeTab, setActiveTab] = useState('trade')
   const [pendingAction, setPendingAction] = useState(null)
   const [dayToast, setDayToast] = useState(null)
+  const [audioEnabled, setAudioEnabled] = useState(false)
   const timersRef = useRef({ actionTimeout: null, actionInterval: null, dayToast: null })
+  const audioRef = useRef(null)
+  const lastSoundEventRef = useRef(null)
   const totals = useMemo(() => getTotals(game), [game])
   const cargoUsed = useMemo(() => getCargoUsed(game), [game])
   const currentLocation = locationsById[game.location]
@@ -2877,6 +3022,7 @@ function App() {
   const activeNpcStory = activeNpc ? NPC_STORY_ARCS[activeNpc.id] : null
   const activeNpcStoryStep = activeNpcStory ? getStoryStep(game, activeNpcStory) : null
   const activeNpcStoryStatus = activeNpcStory ? getStoryRequirementStatus(game, activeNpcStory) : null
+  const activeAudioScene = getAudioScene(game, activeTab, pendingAction)
   const tabs = [
     ['trade', '跑商'],
     ['adventure', '冒险'],
@@ -2890,7 +3036,41 @@ function App() {
     if (timersRef.current.actionTimeout) window.clearTimeout(timersRef.current.actionTimeout)
     if (timersRef.current.actionInterval) window.clearInterval(timersRef.current.actionInterval)
     if (timersRef.current.dayToast) window.clearTimeout(timersRef.current.dayToast)
+    audioRef.current?.destroy()
   }, [])
+
+  useEffect(() => {
+    if (!audioEnabled || !audioRef.current) return
+    audioRef.current.setScene(activeAudioScene)
+  }, [activeAudioScene, audioEnabled])
+
+  useEffect(() => {
+    if (!audioEnabled || !audioRef.current) {
+      lastSoundEventRef.current = latestEvent
+      return
+    }
+    if (lastSoundEventRef.current && latestEvent !== lastSoundEventRef.current) {
+      audioRef.current.playSfx(getEventSound(latestEvent))
+    }
+    lastSoundEventRef.current = latestEvent
+  }, [latestEvent, audioEnabled])
+
+  const toggleAudio = async () => {
+    if (audioEnabled) {
+      audioRef.current?.stop()
+      setAudioEnabled(false)
+      return
+    }
+    if (!audioRef.current) audioRef.current = createAudioEngine()
+    if (!audioRef.current) {
+      setSaveError('当前浏览器不支持 Web Audio，无法开启声音。')
+      return
+    }
+    await audioRef.current.start()
+    audioRef.current.setScene(activeAudioScene)
+    lastSoundEventRef.current = latestEvent
+    setAudioEnabled(true)
+  }
 
   const showDayToast = (nextGame) => {
     if (timersRef.current.dayToast) window.clearTimeout(timersRef.current.dayToast)
@@ -3866,6 +4046,9 @@ function App() {
         <div>
           <p className="eyebrow">奇幻商旅文字小游戏</p>
           <h1>白塔行商记</h1>
+          <button type="button" className={`audio-toggle ${audioEnabled ? 'is-on' : ''}`} onClick={toggleAudio}>
+            {audioEnabled ? `声音开 · ${AUDIO_SCENES[activeAudioScene]?.name ?? '行商曲'}` : '开启声音'}
+          </button>
         </div>
         <div className="stat-grid" aria-label="角色状态">
           <Stat label="金币" value={game.gold} />
