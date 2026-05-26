@@ -127,6 +127,7 @@ const ACHIEVEMENTS = [
   { id: 'streetwise', name: '街巷消息人', text: '追查 8 条本地线索。', test: (s) => (s.stats.localLeadsFollowed ?? 0) >= 8 },
   { id: 'campPlanner', name: '夜营老手', text: '执行 10 次夜营策略。', test: (s) => (s.stats.campActions ?? 0) >= 10 },
   { id: 'stallCloser', name: '摊位快手', text: '成交 8 次每日市集摊位。', test: (s) => (s.stats.marketOffersDone ?? 0) >= 8 },
+  { id: 'stallRegular', name: '熟摊照面', text: '任意摊主信任达到 5。', test: (s) => Object.values(s.stallRelations ?? {}).some((rel) => (rel.trust ?? 0) >= 5) },
   { id: 'profiteer', name: '算盘响亮', text: '累计净收入达到 2000。', test: (s) => s.stats.profit >= 2000 },
   { id: 'longRun', name: '三十日商路', text: '坚持到第 30 天。', test: (s) => s.day >= 30 },
   { id: 'firstBond', name: '第一次心动', text: '结识第一位人物。', test: (s) => (s.knownNpcIds?.length ?? 0) >= 1 },
@@ -437,6 +438,24 @@ const MARKET_OFFER_TEXT = {
     { title: '行会补仓', text: '行会仓库短缺，愿意给守时的行商多加一点辛苦钱。' },
   ],
 }
+
+const STALLHOLDERS = [
+  { id: 'roseMa', name: '玫瑰马婶', home: 'capital', specialties: ['silk', 'wine', 'candle'], text: '她记账极细，熟客能拿到贵族后厨退下来的整箱体面货。' },
+  { id: 'tideBo', name: '潮汐伯恩', home: 'port', specialties: ['pearl', 'spice', 'wine'], text: '他总在退潮前收摊，熟了以后会先问你要不要接手压舱散箱。' },
+  { id: 'blackRail', name: '黑轨阿朵', home: 'mine', specialties: ['ore', 'mithril', 'gear'], text: '她懂矿样成色，愿意把靠谱行商介绍给炉头和工匠。' },
+  { id: 'honeyNell', name: '蜂林奈尔', home: 'forest', specialties: ['herb', 'moon', 'amber'], text: '她的货带着树脂和月井味，信任高时会多留一包药草样货。' },
+  { id: 'frostQuarter', name: '霜营昆特', home: 'fort', specialties: ['salt', 'grain', 'candle'], text: '他替军需官跑腿，熟客交割短单时少受几道盘问。' },
+  { id: 'blueTent', name: '蓝帐萨弥', home: 'oasis', specialties: ['spice', 'silk', 'map'], text: '他的摊位总换位置，但记得住每个按时结账的人。' },
+  { id: 'inkTalla', name: '墨库塔拉', home: 'academy', specialties: ['crystal', 'scroll', 'ink', 'map'], text: '她替导师团清理样本，熟人价里常夹着一点研究经费。' },
+  { id: 'boneRook', name: '骨门鲁克', home: 'ruins', specialties: ['relic', 'dragonbone', 'map'], text: '他只和不怕遗迹尘的人做生意，信任越高，价钱越敢开。' },
+  { id: 'copperIvo', name: '赤铜伊沃', home: 'forge', specialties: ['gear', 'ore', 'mithril'], text: '他把摊子摆在炉门边，熟客能赶在回炉前挑走好零件。' },
+]
+
+const STALL_TRUST_TIERS = [
+  { min: 8, name: '压箱熟客', text: '摊主会优先留整箱好货，成交价明显偏向你。' },
+  { min: 4, name: '留货熟人', text: '摊主愿意压一压尾数，偶尔透露真实急价。' },
+  { min: 1, name: '点头之交', text: '摊主记得你的商号，报价比陌生人更好说话。' },
+]
 
 const CAMP_ACTIONS = [
   { id: 'repair', name: '补轮整车', route: 'explore', cost: 24, text: '修补车轮、检查药包，恢复生命并清掉一点风险压力。' },
@@ -952,6 +971,51 @@ function normalizeStats(baseStats, stats = {}) {
   }
 }
 
+function createEmptyStallRelations() {
+  return Object.fromEntries(STALLHOLDERS.map((holder) => [holder.id, { trust: 0, deals: 0, lastDealDay: 0 }]))
+}
+
+function normalizeStallRelations(relations = {}) {
+  const empty = createEmptyStallRelations()
+  return Object.fromEntries(
+    STALLHOLDERS.map((holder) => {
+      const existing = relations?.[holder.id] ?? {}
+      return [holder.id, {
+        trust: existing.trust ?? empty[holder.id].trust,
+        deals: existing.deals ?? empty[holder.id].deals,
+        lastDealDay: existing.lastDealDay ?? empty[holder.id].lastDealDay,
+      }]
+    }),
+  )
+}
+
+function getStallholderForLocation(locationId, goodId = null) {
+  const localGoods = LOCATION_TRAITS[locationId]?.localGoods ?? []
+  const candidates = STALLHOLDERS.filter((holder) => holder.home === locationId || holder.specialties.some((id) => localGoods.includes(id) || id === goodId))
+  return pick(candidates.length ? candidates : STALLHOLDERS)
+}
+
+function resolveStallholder(offer, fallbackLocationId = null) {
+  if (!offer) return null
+  return STALLHOLDERS.find((holder) => holder.id === offer.stallholderId)
+    ?? STALLHOLDERS.find((holder) => holder.home === (offer.locationId ?? fallbackLocationId))
+    ?? STALLHOLDERS[0]
+}
+
+function getStallTrust(game, stallholderId) {
+  return game.stallRelations?.[stallholderId] ?? { trust: 0, deals: 0, lastDealDay: 0 }
+}
+
+function getStallTrustTier(game, stallholderId) {
+  const rel = getStallTrust(game, stallholderId)
+  return STALL_TRUST_TIERS.find((tier) => rel.trust >= tier.min) ?? null
+}
+
+function getStallQuoteBonus(game, stallholderId) {
+  const rel = getStallTrust(game, stallholderId)
+  return Math.min((rel.trust ?? 0) * 0.018, 0.16)
+}
+
 function stableHash(text) {
   return [...text].reduce((sum, char) => (sum * 31 + char.charCodeAt(0)) % 9973, 17)
 }
@@ -1091,15 +1155,20 @@ function createMarketOffer(day, locationId) {
   const demandGoods = getDemandGoods(location.id)
   const type = Math.random() < 0.56 ? 'bulkBuy' : 'bulkSell'
   const text = pick(MARKET_OFFER_TEXT[type])
+  const holder = getStallholderForLocation(location.id)
+  const holderGoods = holder.specialties.filter((goodId) => goodsById[goodId])
+  const buyPool = [...new Set([...localGoods, ...holderGoods])]
+  const sellPool = [...new Set([...(demandGoods.length ? demandGoods : GOODS.map((good) => good.id)), ...holderGoods])]
   const goodId = type === 'bulkBuy'
-    ? pick(localGoods)
-    : pick(demandGoods.length ? demandGoods : GOODS.map((good) => good.id))
+    ? pick(buyPool.length ? buyPool : localGoods)
+    : pick(sellPool.length ? sellPool : GOODS.map((good) => good.id))
   const amount = type === 'bulkBuy' ? rand(2, location.risk >= 4 ? 6 : 4) : rand(1, location.risk >= 4 ? 4 : 3)
   const factor = type === 'bulkBuy' ? rand(68, 84) / 100 : rand(116, 142) / 100
   return {
     id: `${day}-${location.id}-${type}-${goodId}-${amount}`,
     day,
     locationId: location.id,
+    stallholderId: holder.id,
     type,
     goodId,
     amount,
@@ -1115,7 +1184,10 @@ function getMarketOfferQuote(game, offer = game.marketOffer) {
   if (!good) return null
   const unitMode = offer.type === 'bulkSell' ? 'sell' : 'buy'
   const unit = getPrice(game, offer.goodId, unitMode)
-  const total = Math.max(1, Math.round(unit * offer.amount * offer.factor))
+  const holder = resolveStallholder(offer, offer.locationId ?? game.location)
+  const trustBonus = getStallQuoteBonus(game, holder?.id ?? offer.stallholderId)
+  const adjustedFactor = offer.type === 'bulkSell' ? offer.factor * (1 + trustBonus) : offer.factor * (1 - trustBonus)
+  const total = Math.max(1, Math.round(unit * offer.amount * adjustedFactor))
   const counter = unit * offer.amount
   return {
     good,
@@ -1123,6 +1195,7 @@ function getMarketOfferQuote(game, offer = game.marketOffer) {
     total,
     counter,
     delta: Math.abs(counter - total),
+    trustBonus,
   }
 }
 
@@ -1130,12 +1203,16 @@ function describeMarketOffer(game) {
   const offer = game.marketOffer
   if (!offer) return '今日摊位已经成交或散场。'
   const location = locationsById[offer.locationId]
+  const holder = resolveStallholder(offer, offer.locationId)
+  const relation = getStallTrust(game, holder.id)
+  const tier = getStallTrustTier(game, holder.id)
   const quote = getMarketOfferQuote(game, offer)
   if (!quote) return '今日摊位还在等可靠报价。'
+  const trustText = tier ? `${holder.name} · ${tier.name}，信任 ${relation.trust}。` : `${holder.name}，信任 ${relation.trust}。`
   if (offer.type === 'bulkBuy') {
-    return `${location?.name ?? '本地'}摊位：${offer.title}，${offer.text} ${quote.good.name} ×${offer.amount} 打包价 ${quote.total} 金币，比柜台省 ${quote.delta}。`
+    return `${location?.name ?? '本地'}摊位：${trustText}${offer.title}，${offer.text} ${quote.good.name} ×${offer.amount} 打包价 ${quote.total} 金币，比柜台省 ${quote.delta}。`
   }
-  return `${location?.name ?? '本地'}摊位：${offer.title}，${offer.text} 收 ${quote.good.name} ×${offer.amount}，愿付 ${quote.total} 金币，比柜台多 ${quote.delta}。`
+  return `${location?.name ?? '本地'}摊位：${trustText}${offer.title}，${offer.text} 收 ${quote.good.name} ×${offer.amount}，愿付 ${quote.total} 金币，比柜台多 ${quote.delta}。`
 }
 
 function getCampActionCost(game, action) {
@@ -1231,6 +1308,7 @@ function achievementCategory(achievement) {
   if (['fighter', 'veteran', 'rareHunter', 'extremeRoad', 'firstLandmark', 'landmarkAtlas'].includes(achievement.id)) return '冒险'
   if (['explorer', 'deepExplorer', 'connected', 'longRun', 'streetwise', 'campPlanner'].includes(achievement.id)) return '旅途'
   if (['factionFriend', 'alliedNetwork'].includes(achievement.id)) return '势力'
+  if (['stallRegular'].includes(achievement.id)) return '交易'
   return '经营'
 }
 
@@ -1396,6 +1474,7 @@ function createInitialGame() {
     marketOffer,
     activeRouteContract: null,
     factions: createInitialFactions(),
+    stallRelations: createEmptyStallRelations(),
     guild: createInitialGuild(),
     locationMastery: createInitialLocationMastery(),
     discoveries: createInitialDiscoveries(),
@@ -1529,6 +1608,8 @@ function getTodayFocus(game) {
   const pressure = game.riskPressure ?? 0
   const pressureText = pressure >= 18 ? '危险盯梢' : pressure >= 10 ? '压力偏高' : '车队平稳'
   const commission = (game.commissions ?? [])[0]
+  const offerHolder = game.marketOffer ? resolveStallholder(game.marketOffer, game.location) : null
+  const offerTier = offerHolder ? getStallTrustTier(game, offerHolder.id) : null
   return {
     bestGoods,
     route,
@@ -1537,7 +1618,7 @@ function getTodayFocus(game) {
     condition: getRouteConditionEffect(game.routeCondition).name,
     localScene: game.localScene?.name ?? '平稳市面',
     localLead: game.localLead ? `${game.localLead.title} · ${game.localLead.cost} 金币` : '暂无线索',
-    marketOffer: game.marketOffer ? `${game.marketOffer.title} · ${goodsById[game.marketOffer.goodId]?.name ?? '本地货'}` : '摊位已散',
+    marketOffer: game.marketOffer ? `${offerHolder?.name ?? '临时摊主'} · ${offerTier?.name ?? '新照面'} · ${goodsById[game.marketOffer.goodId]?.name ?? '本地货'}` : '摊位已散',
     commission: commission ? `${commissionLabels[commission.type]}：${commission.text}` : '今日暂无委托',
     contract: getRouteContractFocus(game),
     mastery: `本地熟练度 ${getMasteryLevel(game, game.location)} 级 · ${getFactionFavor(game).tier?.name ?? '普通往来'}`,
@@ -2237,6 +2318,7 @@ function encodeSave(game) {
     marketOffer: game.marketOffer,
     activeRouteContract: game.activeRouteContract,
     factions: game.factions,
+    stallRelations: game.stallRelations,
     guild: game.guild,
     locationMastery: game.locationMastery,
     discoveries: game.discoveries,
@@ -2275,6 +2357,7 @@ function decodeSave(text) {
     marketOffer: payload.marketOffer ?? createMarketOffer(payload.day ?? 1, payload.location),
     activeRouteContract: payload.activeRouteContract ?? null,
     factions,
+    stallRelations: normalizeStallRelations(payload.stallRelations),
     guild: normalizeGuild(payload.guild),
     locationMastery: normalizeLocationMastery(payload.locationMastery),
     discoveries: normalizeDiscoveries(payload.discoveries),
@@ -2307,6 +2390,9 @@ function App() {
   const currentDiscoveries = getDiscoveredLandmarks(game, game.location)
   const currentDiscoveryTotal = landmarksByLocation[game.location]?.length ?? 0
   const marketOfferQuote = getMarketOfferQuote(game)
+  const marketOfferHolder = game.marketOffer ? resolveStallholder(game.marketOffer, game.location) : null
+  const marketOfferTrust = marketOfferHolder ? getStallTrust(game, marketOfferHolder.id) : null
+  const marketOfferTier = marketOfferHolder ? getStallTrustTier(game, marketOfferHolder.id) : null
   const knownNpcs = (game.knownNpcIds ?? []).map((id) => npcById[id]).filter(Boolean)
   const activeNpc = npcById[selectedNpcId] ?? knownNpcs[0]
   const activeRel = activeNpc ? game.relationships?.[activeNpc.id] : null
@@ -2383,47 +2469,63 @@ function App() {
     commit((current) => {
       const offer = current.marketOffer
       if (!offer) return addTaggedLog(current, '摊位', '今天的临时摊位已经散场。')
-      const quote = getMarketOfferQuote(current, offer)
+      const holder = resolveStallholder(offer, current.location)
+      const trustedOffer = { ...offer, stallholderId: holder.id }
+      const quote = getMarketOfferQuote(current, trustedOffer)
       if (!quote) return current
       const location = locationsById[current.location]
+      const stallRelations = normalizeStallRelations(current.stallRelations)
+      const previousTrust = stallRelations[holder.id]?.trust ?? 0
+      const nextTrust = clamp(previousTrust + 1, 0, 12)
+      const nextStallRelations = {
+        ...stallRelations,
+        [holder.id]: {
+          trust: nextTrust,
+          deals: (stallRelations[holder.id]?.deals ?? 0) + 1,
+          lastDealDay: current.day,
+        },
+      }
+      const trustNote = nextTrust > previousTrust ? ` ${holder.name}对你的信任提升到 ${nextTrust}。` : ` ${holder.name}记下了这笔熟客账。`
       const offerStats = {
         ...current.stats,
         trades: current.stats.trades + 1,
-        goodsMoved: current.stats.goodsMoved + offer.amount,
+        goodsMoved: current.stats.goodsMoved + trustedOffer.amount,
         marketOffersDone: (current.stats.marketOffersDone ?? 0) + 1,
       }
 
-      if (offer.type === 'bulkBuy') {
+      if (trustedOffer.type === 'bulkBuy') {
         const free = getTotals(current).capacity - getCargoUsed(current)
-        const need = quote.good.weight * offer.amount
-        if (current.gold < quote.total) return addTaggedLog(current, '摊位', `${offer.title}需要 ${quote.total} 金币。`)
-        if (free < need) return addTaggedLog(current, '摊位', `${offer.title}需要 ${need} 货舱空间，当前只剩 ${free}。`)
+        const need = quote.good.weight * trustedOffer.amount
+        if (current.gold < quote.total) return addTaggedLog(current, '摊位', `${trustedOffer.title}需要 ${quote.total} 金币。`)
+        if (free < need) return addTaggedLog(current, '摊位', `${trustedOffer.title}需要 ${need} 货舱空间，当前只剩 ${free}。`)
         return addTaggedLog(
           awardGuild(addLocationMastery({
             ...current,
             gold: current.gold - quote.total,
-            inventory: { ...current.inventory, [offer.goodId]: (current.inventory[offer.goodId] ?? 0) + offer.amount },
+            inventory: { ...current.inventory, [trustedOffer.goodId]: (current.inventory[trustedOffer.goodId] ?? 0) + trustedOffer.amount },
             marketOffer: null,
+            stallRelations: nextStallRelations,
             stats: { ...offerStats, profit: current.stats.profit - quote.total },
-          }, current.location, 'trades', offer.amount), 'trade', Math.max(8, Math.round(quote.total / 28))),
+          }, current.location, 'trades', trustedOffer.amount), 'trade', Math.max(8, Math.round(quote.total / 28))),
           '摊位',
-          `你在${location.name}成交${offer.title}，买下 ${quote.good.name} ×${offer.amount}，花费 ${quote.total} 金币。`,
+          `你在${location.name}成交${holder.name}的${trustedOffer.title}，买下 ${quote.good.name} ×${trustedOffer.amount}，花费 ${quote.total} 金币。${trustNote}`,
         )
       }
 
-      const have = current.inventory[offer.goodId] ?? 0
-      if (have < offer.amount) return addTaggedLog(current, '摊位', `${offer.title}需要 ${quote.good.name} ×${offer.amount}，当前只有 ${have}。`)
+      const have = current.inventory[trustedOffer.goodId] ?? 0
+      if (have < trustedOffer.amount) return addTaggedLog(current, '摊位', `${trustedOffer.title}需要 ${quote.good.name} ×${trustedOffer.amount}，当前只有 ${have}。`)
       return addTaggedLog(
         awardGuild(addLocationMastery({
           ...current,
           gold: current.gold + quote.total,
-          inventory: { ...current.inventory, [offer.goodId]: have - offer.amount },
+          inventory: { ...current.inventory, [trustedOffer.goodId]: have - trustedOffer.amount },
           reputation: current.reputation + (quote.total >= 500 ? 1 : 0),
           marketOffer: null,
+          stallRelations: nextStallRelations,
           stats: { ...offerStats, profit: current.stats.profit + quote.total },
-        }, current.location, 'trades', offer.amount), 'trade', Math.max(9, Math.round(quote.total / 24))),
+        }, current.location, 'trades', trustedOffer.amount), 'trade', Math.max(9, Math.round(quote.total / 24))),
         '摊位',
-        `你在${location.name}接下${offer.title}，卖出 ${quote.good.name} ×${offer.amount}，收入 ${quote.total} 金币。`,
+        `你在${location.name}接下${holder.name}的${trustedOffer.title}，卖出 ${quote.good.name} ×${trustedOffer.amount}，收入 ${quote.total} 金币。${trustNote}`,
       )
     })
   }
@@ -3317,6 +3419,12 @@ function App() {
                     {' · '}柜台参考 {marketOfferQuote.counter} / 摊位价 {marketOfferQuote.total}
                   </small>
                 )}
+                {marketOfferHolder && (
+                  <small className="stallholder-line">
+                    {marketOfferHolder.name} · 信任 {marketOfferTrust?.trust ?? 0} · {marketOfferTier?.name ?? '新照面'} · 熟客让利 {Math.round((marketOfferQuote?.trustBonus ?? 0) * 100)}%
+                  </small>
+                )}
+                {marketOfferHolder && <small>{marketOfferHolder.text}</small>}
               </div>
               <button type="button" disabled={!canAct || !game.marketOffer} onClick={acceptMarketOffer}>
                 {game.marketOffer?.type === 'bulkSell' ? '交货成交' : '买断成交'}
