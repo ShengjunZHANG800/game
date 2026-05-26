@@ -750,6 +750,37 @@ button:disabled {
   line-height: 1.45;
 }
 
+.local-lead-card {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 11px;
+  border: 1px solid rgba(142, 230, 168, 0.28);
+  border-radius: 8px;
+  background: rgba(35, 68, 50, 0.2);
+}
+
+.local-lead-card strong {
+  color: #ddffc8;
+}
+
+.local-lead-card span {
+  color: #d6c7aa;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.local-lead-card button {
+  justify-self: start;
+  min-height: 32px;
+  padding: 5px 10px;
+}
+
+.local-lead-card.is-empty {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .commission-card {
   margin-top: 0;
 }
@@ -986,6 +1017,10 @@ button:disabled {
 
 .tag-秘闻 {
   color: #a9d8ff;
+}
+
+.tag-线索 {
+  color: #ddffc8;
 }
 
 .achievement-grid {

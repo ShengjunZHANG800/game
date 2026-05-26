@@ -124,6 +124,7 @@ const ACHIEVEMENTS = [
   { id: 'wellPrepared', name: '稳健车队', text: '生命上限达到 130。', test: (s) => getTotals(s).maxHp >= 130 },
   { id: 'famous', name: '声名远扬', text: '声望达到 12。', test: (s) => s.reputation >= 12 },
   { id: 'connected', name: '各地都有熟人', text: '触发 15 次随机事件。', test: (s) => s.stats.events >= 15 },
+  { id: 'streetwise', name: '街巷消息人', text: '追查 8 条本地线索。', test: (s) => (s.stats.localLeadsFollowed ?? 0) >= 8 },
   { id: 'profiteer', name: '算盘响亮', text: '累计净收入达到 2000。', test: (s) => s.stats.profit >= 2000 },
   { id: 'longRun', name: '三十日商路', text: '坚持到第 30 天。', test: (s) => s.day >= 30 },
   { id: 'firstBond', name: '第一次心动', text: '结识第一位人物。', test: (s) => (s.knownNpcIds?.length ?? 0) >= 1 },
@@ -411,6 +412,14 @@ const ROUTE_CONTRACT_TEXT = [
   '贵客预订',
   '压舱补缺',
   '节庆备采',
+]
+
+const LOCAL_LEAD_TEMPLATES = [
+  { type: 'supply', title: '后巷样货', weight: 14, cost: [14, 34], text: '本地仓丁愿意低声指给你一批没上柜的样货。' },
+  { type: 'broker', title: '柜台暗价', weight: 12, cost: [18, 42], text: '一位中间人知道哪家柜台今天急着改价。' },
+  { type: 'contact', title: '熟人引见', weight: 11, cost: [16, 38], text: '茶馆里有人能把你介绍给正巧在本地办事的人物。' },
+  { type: 'landmark', title: '旧地图角', weight: 10, cost: [20, 48], text: '一张旧地图角落写着本地还没公开的去处。' },
+  { type: 'security', title: '巡路口信', weight: 9, cost: [12, 30], text: '驿站跑腿带来一条可避开麻烦的巡路口信。' },
 ]
 
 const ROUTE_CONDITIONS = [
@@ -910,6 +919,7 @@ function normalizeStats(baseStats, stats = {}) {
     commissionsDone: stats.commissionsDone ?? 0,
     routeContractsDone: stats.routeContractsDone ?? 0,
     routeContractIncidents: stats.routeContractIncidents ?? 0,
+    localLeadsFollowed: stats.localLeadsFollowed ?? 0,
     pressureCleared: stats.pressureCleared ?? 0,
     npcQuests: stats.npcQuests ?? 0,
     landmarksFound: stats.landmarksFound ?? 0,
@@ -1008,6 +1018,47 @@ function describeLocalScene(scene) {
   return `本地日势：${location?.name ?? '本地'} - ${scene.name}，${good?.name ?? '货物'}${move}。${scene.text} ${pressure}。`
 }
 
+function createLocalLead(day, locationId) {
+  const location = locationsById[locationId] ?? LOCATIONS[0]
+  const pool = LOCAL_LEAD_TEMPLATES.flatMap((template) => {
+    const riskBias = template.type === 'security' && location.risk >= 4 ? 4 : 0
+    const socialBias = template.type === 'contact' && location.risk <= 2 ? 3 : 0
+    return Array.from({ length: template.weight + riskBias + socialBias }, () => template)
+  })
+  const template = pick(pool)
+  const localGoods = LOCATION_TRAITS[location.id]?.localGoods ?? GOODS.map((good) => good.id)
+  const localNpcs = NPCS.filter((npc) => npc.location === location.id)
+  const npc = pick(localNpcs.length ? localNpcs : NPCS)
+  const cost = rand(template.cost[0], template.cost[1] + location.risk * 3)
+  const goodId = pick(localGoods)
+  return {
+    id: `${day}-${location.id}-${template.type}-${goodId}-${npc.id}`,
+    day,
+    locationId: location.id,
+    type: template.type,
+    title: template.title,
+    cost,
+    goodId,
+    npcId: npc.id,
+    text: template.text,
+  }
+}
+
+function describeLocalLead(lead) {
+  if (!lead) return '今日没有可靠线索。'
+  const location = locationsById[lead.locationId]
+  const good = goodsById[lead.goodId]
+  const npc = npcById[lead.npcId]
+  const detail = {
+    supply: `可能拿到${good?.name ?? '本地货'}样货。`,
+    broker: `可能影响${good?.name ?? '本地货'}今日行情。`,
+    contact: `可能结识或加深与${npc?.name ?? '本地人物'}的关系。`,
+    landmark: '可能补全本地地图册。',
+    security: '可能降低风险压力并换到势力照应。',
+  }[lead.type]
+  return `${location?.name ?? '本地'}线索：${lead.title}，${lead.text} ${detail}花费 ${lead.cost} 金币。`
+}
+
 function createWorldNews(day) {
   const location = pick(LOCATIONS)
   const trait = LOCATION_TRAITS[location.id]
@@ -1041,6 +1092,7 @@ function advanceDay(game, nextDay, locationId = game.location) {
     routeContract: createRouteContract(locationId, nextDay),
     routeCondition: createRouteCondition(nextDay, locationId),
     localScene: createLocalScene(nextDay, locationId),
+    localLead: createLocalLead(nextDay, locationId),
   }
   if (nextDay % 7 === 0) updates.worldNews = createWorldNews(nextDay)
   return updates
@@ -1080,7 +1132,7 @@ function parseLogEntry(entry) {
 function achievementCategory(achievement) {
   if (['firstBond', 'warmHeart', 'confession', 'firstMarriage', 'manyLoves', 'dates', 'giftGiver', 'companionRoad', 'personalQuests'].includes(achievement.id)) return '人物'
   if (['fighter', 'veteran', 'rareHunter', 'extremeRoad', 'firstLandmark', 'landmarkAtlas'].includes(achievement.id)) return '冒险'
-  if (['explorer', 'deepExplorer', 'connected', 'longRun'].includes(achievement.id)) return '旅途'
+  if (['explorer', 'deepExplorer', 'connected', 'longRun', 'streetwise'].includes(achievement.id)) return '旅途'
   if (['factionFriend', 'alliedNetwork'].includes(achievement.id)) return '势力'
   return '经营'
 }
@@ -1202,6 +1254,7 @@ function createInitialGame() {
   const commissions = createCommissions(startLocation.id, 1)
   const routeCondition = createRouteCondition(1, startLocation.id)
   const localScene = createLocalScene(1, startLocation.id)
+  const localLead = createLocalLead(1, startLocation.id)
 
   return {
     version: VERSION,
@@ -1223,6 +1276,7 @@ function createInitialGame() {
     worldNews,
     routeCondition,
     localScene,
+    localLead,
     commissions,
     routeContract: createRouteContract(startLocation.id, 1),
     activeRouteContract: null,
@@ -1259,6 +1313,7 @@ function createInitialGame() {
       npcQuests: 0,
       landmarksFound: 0,
       routeContractIncidents: 0,
+      localLeadsFollowed: 0,
     },
     achievements: [],
     log: [
@@ -1266,6 +1321,7 @@ function createInitialGame() {
       `第 1 天：身份影响：${describeBackground(background)}。起始货物：${describeInventory(inventory)}。${background.text}`,
       `第 1 天：${describeRouteCondition(routeCondition)}`,
       `第 1 天：${describeLocalScene(localScene)}`,
+      `第 1 天：${describeLocalLead(localLead)}`,
       ...worldNews.map((news) => `第 1 天：${describeWorldNews(news)}`),
       ...rumors.map((rumor) => `第 1 天：${describeRumor(rumor)}`),
       ...START_LOG.slice(1).map((entry) => `第 1 天：${entry}`),
@@ -1359,6 +1415,7 @@ function getTodayFocus(game) {
     pressureText,
     condition: getRouteConditionEffect(game.routeCondition).name,
     localScene: game.localScene?.name ?? '平稳市面',
+    localLead: game.localLead ? `${game.localLead.title} · ${game.localLead.cost} 金币` : '暂无线索',
     commission: commission ? `${commissionLabels[commission.type]}：${commission.text}` : '今日暂无委托',
     contract: getRouteContractFocus(game),
     mastery: `本地熟练度 ${getMasteryLevel(game, game.location)} 级 · ${getFactionFavor(game).tier?.name ?? '普通往来'}`,
@@ -1944,6 +2001,7 @@ function encodeSave(game) {
     worldNews: game.worldNews,
     routeCondition: game.routeCondition,
     localScene: game.localScene,
+    localLead: game.localLead,
     commissions: game.commissions,
     routeContract: game.routeContract,
     activeRouteContract: game.activeRouteContract,
@@ -1979,6 +2037,7 @@ function decodeSave(text) {
     worldNews: Array.isArray(payload.worldNews) ? payload.worldNews : createWorldNews(payload.day ?? 1),
     routeCondition: payload.routeCondition ?? createRouteCondition(payload.day ?? 1, payload.location),
     localScene: payload.localScene ?? createLocalScene(payload.day ?? 1, payload.location),
+    localLead: payload.localLead ?? createLocalLead(payload.day ?? 1, payload.location),
     commissions: Array.isArray(payload.commissions) ? payload.commissions : createCommissions(payload.location, payload.day ?? 1),
     routeContract: payload.routeContract ?? createRouteContract(payload.location, payload.day ?? 1),
     activeRouteContract: payload.activeRouteContract ?? null,
@@ -2099,6 +2158,7 @@ function App() {
       const newsText = dayUpdates.worldNews ? ` ${dayUpdates.worldNews.map(describeWorldNews).join(' ')}` : ''
       const routeText = ` ${describeRouteCondition(dayUpdates.routeCondition)}`
       const sceneText = ` ${describeLocalScene(dayUpdates.localScene)}`
+      const leadText = ` ${describeLocalLead(dayUpdates.localLead)}`
       const moved = addLog(
         awardGuild(addLocationMastery({
           ...current,
@@ -2113,7 +2173,7 @@ function App() {
             extremeSurvivals: (current.stats.extremeSurvivals ?? 0) + (destination.risk >= 5 ? 1 : 0),
           },
         }, locationId, 'explores', 1), 'explore', 14 + destination.risk * 3),
-        `第 ${current.day + 1} 天，你抵达${destination.name}，支付路费 ${travelCost} 金币。${assist?.type === 'route' ? ' 同行协助替你压低了一段路费。' : ''}${routeText}${sceneText}${newsText}`,
+        `第 ${current.day + 1} 天，你抵达${destination.name}，支付路费 ${travelCost} 金币。${assist?.type === 'route' ? ' 同行协助替你压低了一段路费。' : ''}${routeText}${sceneText}${leadText}${newsText}`,
       )
       const traveled = applyEvent(moved, createTravelEvent(current, destination, current.routeCondition))
       const incident = createRouteContractIncident(current, destination, current.routeCondition)
@@ -2138,6 +2198,7 @@ function App() {
       const newsText = dayUpdates.worldNews ? ` ${dayUpdates.worldNews.map(describeWorldNews).join(' ')}` : ''
       const routeText = ` ${describeRouteCondition(dayUpdates.routeCondition)}`
       const sceneText = ` ${describeLocalScene(dayUpdates.localScene)}`
+      const leadText = ` ${describeLocalLead(dayUpdates.localLead)}`
       const explored = addLog(
         awardGuild(addLocationMastery({
           ...current,
@@ -2151,7 +2212,7 @@ function App() {
             extremeSurvivals: (current.stats.extremeSurvivals ?? 0) + (location.risk >= 5 ? 1 : 0),
           },
         }, current.location, 'explores', 1), 'explore', 18 + location.risk * 4),
-        `第 ${current.day + 1} 天，你花费 ${exploreCost} 金币探索${location.name}。${assist?.type === 'scout' ? ' 同伴提前探路，补给消耗降低。' : ''}${routeText}${sceneText}${newsText}`,
+        `第 ${current.day + 1} 天，你花费 ${exploreCost} 金币探索${location.name}。${assist?.type === 'scout' ? ' 同伴提前探路，补给消耗降低。' : ''}${routeText}${sceneText}${leadText}${newsText}`,
       )
       return maybePartnerEvent(applyEvent(explored, createExploreEvent(current, current.routeCondition)))
     })
@@ -2334,6 +2395,97 @@ function App() {
         }, commission.locationId, 'battles', 1), 'combat', 18 + locationsById[commission.locationId].risk * 4),
         '委托',
         `接下悬赏委托：${enemy.name}已经现身，胜利后会把委托赏金一并结算。`,
+      )
+    })
+  }
+
+  const followLocalLead = () => {
+    if (!canAct) return
+    commit((current) => {
+      const lead = current.localLead
+      if (!lead) return addTaggedLog(current, '线索', '今天已经没有可靠线索可追查。')
+      const location = locationsById[current.location]
+      if (current.gold < lead.cost) return addTaggedLog(current, '线索', `追查这条线索需要 ${lead.cost} 金币。`)
+      const baseStats = {
+        ...current.stats,
+        localLeadsFollowed: (current.stats.localLeadsFollowed ?? 0) + 1,
+      }
+      const base = {
+        ...current,
+        gold: current.gold - lead.cost,
+        localLead: null,
+        stats: baseStats,
+      }
+      const leadBase = (route = 'explore', xp = 12) => awardGuild(addLocationMastery(base, current.location, route, 1), route, xp)
+      const good = goodsById[lead.goodId]
+
+      if (lead.type === 'supply') {
+        const amount = rand(1, location.risk >= 4 ? 3 : 2)
+        return addTaggedLog(
+          {
+            ...leadBase('trade', 14 + amount * 4),
+            inventory: { ...current.inventory, [lead.goodId]: (current.inventory[lead.goodId] ?? 0) + amount },
+          },
+          '线索',
+          `你顺着“${lead.title}”找到一批压箱样货，花费 ${lead.cost} 金币打点，获得 ${good.name} ×${amount}。`,
+        )
+      }
+
+      if (lead.type === 'broker') {
+        const factor = Math.random() > 0.5 ? rand(112, 134) / 100 : rand(76, 91) / 100
+        const trend = factor > 1 ? '抬高' : '压低'
+        return addTaggedLog(
+          {
+            ...leadBase('trade', 16),
+            market: { ...current.market, [lead.goodId]: Number(clamp((current.market[lead.goodId] ?? 1) * factor, 0.42, 1.95).toFixed(2)) },
+          },
+          '线索',
+          `你追到柜台暗价，花费 ${lead.cost} 金币换来一轮私下传话，${good.name}行情被${trend}了。`,
+        )
+      }
+
+      if (lead.type === 'contact') {
+        const npc = npcById[lead.npcId]
+        const gain = rand(5, 12) + getEquipmentPassives(current).socialBonus
+        const metBefore = current.relationships?.[lead.npcId]?.met
+        const next = updateRelationship({ ...leadBase('social', 18), stats: { ...baseStats, socialActions: current.stats.socialActions + 1 } }, lead.npcId, (rel) => ({
+          ...rel,
+          affection: clamp(rel.affection + gain, 0, 100),
+          interactions: rel.interactions + 1,
+          stage: relationStage({ ...rel, affection: clamp(rel.affection + gain, 0, 100) }),
+        }))
+        return addTaggedLog(
+          next,
+          '线索',
+          `你花费 ${lead.cost} 金币追查“${lead.title}”，${metBefore ? '又一次遇见' : '结识了'}${npc.name}。${npc.text} 好感 +${gain}。`,
+        )
+      }
+
+      if (lead.type === 'landmark') {
+        const discovery = createDiscoveryEvent(current, location)
+        if (discovery) return applyEvent(leadBase('explore', 20), discovery)
+        return addTaggedLog(
+          { ...leadBase('explore', 10), riskPressure: Math.max(0, (current.riskPressure ?? 0) - 1) },
+          '线索',
+          `你核对旧地图角，花费 ${lead.cost} 金币确认${location.name}的秘闻已暂时补齐，顺手排除了一条危险误路。`,
+        )
+      }
+
+      const factionId = LOCATION_TRAITS[current.location]?.factionId
+      const faction = FACTIONS.find((item) => item.id === factionId)
+      return addTaggedLog(
+        {
+          ...leadBase('explore', 13),
+          riskPressure: Math.max(0, (current.riskPressure ?? 0) - 3),
+          factions: factionId ? { ...(current.factions ?? createInitialFactions()), [factionId]: (current.factions?.[factionId] ?? 0) + 1 } : current.factions,
+          stats: {
+            ...baseStats,
+            pressureCleared: (current.stats.pressureCleared ?? 0) + 3,
+            factionGain: (current.stats.factionGain ?? 0) + (factionId ? 1 : 0),
+          },
+        },
+        '线索',
+        `你花费 ${lead.cost} 金币买下巡路口信，车队避开一段麻烦路，风险压力 -3${faction ? `，${faction.name}好感 +1` : ''}。`,
       )
     })
   }
@@ -2684,6 +2836,7 @@ function App() {
         <strong>路线：{todayFocus.route} · {todayFocus.mastery}</strong>
         <strong>路况：{todayFocus.condition}</strong>
         <strong>日势：{todayFocus.localScene}</strong>
+        <strong>线索：{todayFocus.localLead}</strong>
         <strong>风险：{todayFocus.pressureText}</strong>
         <strong>商单：{todayFocus.contract}</strong>
         <strong>{todayFocus.commission}</strong>
@@ -2846,6 +2999,13 @@ function App() {
               {(game.rumors ?? []).map((rumor) => <span key={rumor.id}>{describeRumor(rumor)}</span>)}
               {(game.worldNews ?? []).map((news) => <span key={news.id}>{describeWorldNews(news)}</span>)}
             </div>
+            <article className={`local-lead-card ${game.localLead ? '' : 'is-empty'}`}>
+              <strong>{game.localLead ? game.localLead.title : '今日线索已处理'}</strong>
+              <span>{describeLocalLead(game.localLead)}</span>
+              <button type="button" disabled={!canAct || !game.localLead || game.gold < (game.localLead?.cost ?? 0)} onClick={followLocalLead}>
+                追查线索
+              </button>
+            </article>
           </section>
 
           <section className="panel discovery-panel">
