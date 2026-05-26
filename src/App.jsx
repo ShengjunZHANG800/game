@@ -144,6 +144,7 @@ const ACHIEVEMENTS = [
   { id: 'alliedNetwork', name: '大陆人脉网', text: '4 个势力好感达到 5。', test: (s) => Object.values(s.factions ?? {}).filter((value) => value >= 5).length >= 4 },
   { id: 'extremeRoad', name: '极危归来', text: '从极危地点或路线中胜出 3 次。', test: (s) => (s.stats.extremeSurvivals ?? 0) >= 3 },
   { id: 'companionRoad', name: '同行默契', text: '邀请人物协助 8 次。', test: (s) => (s.stats.companionHelps ?? 0) >= 8 },
+  { id: 'companionMoments', name: '路上有话', text: '触发 8 次同行片段。', test: (s) => (s.stats.companionMoments ?? 0) >= 8 },
   { id: 'commissioner', name: '委托熟手', text: '完成 10 个本地委托。', test: (s) => (s.stats.commissionsDone ?? 0) >= 10 },
   { id: 'routeContractor', name: '第一张跨城商单', text: '完成 1 个跨城商单。', test: (s) => (s.stats.routeContractsDone ?? 0) >= 1 },
   { id: 'routeNetworker', name: '商路承运人', text: '完成 6 个跨城商单。', test: (s) => (s.stats.routeContractsDone ?? 0) >= 6 },
@@ -929,6 +930,7 @@ function normalizeStats(baseStats, stats = {}) {
     routeContractIncidents: stats.routeContractIncidents ?? 0,
     localLeadsFollowed: stats.localLeadsFollowed ?? 0,
     campActions: stats.campActions ?? 0,
+    companionMoments: stats.companionMoments ?? 0,
     pressureCleared: stats.pressureCleared ?? 0,
     npcQuests: stats.npcQuests ?? 0,
     landmarksFound: stats.landmarksFound ?? 0,
@@ -1156,7 +1158,7 @@ function parseLogEntry(entry) {
 }
 
 function achievementCategory(achievement) {
-  if (['firstBond', 'warmHeart', 'confession', 'firstMarriage', 'manyLoves', 'dates', 'giftGiver', 'companionRoad', 'personalQuests'].includes(achievement.id)) return '人物'
+  if (['firstBond', 'warmHeart', 'confession', 'firstMarriage', 'manyLoves', 'dates', 'giftGiver', 'companionRoad', 'companionMoments', 'personalQuests'].includes(achievement.id)) return '人物'
   if (['fighter', 'veteran', 'rareHunter', 'extremeRoad', 'firstLandmark', 'landmarkAtlas'].includes(achievement.id)) return '冒险'
   if (['explorer', 'deepExplorer', 'connected', 'longRun', 'streetwise', 'campPlanner'].includes(achievement.id)) return '旅途'
   if (['factionFriend', 'alliedNetwork'].includes(achievement.id)) return '势力'
@@ -1342,6 +1344,7 @@ function createInitialGame() {
       routeContractIncidents: 0,
       localLeadsFollowed: 0,
       campActions: 0,
+      companionMoments: 0,
     },
     achievements: [],
     log: [
@@ -1497,7 +1500,21 @@ function describeAssist(game) {
     guard: '减轻战斗伤害',
     bargain: '提高交易谈价',
   }[assist.type]
-  return `${npc?.name ?? '同伴'}正在协助：${label}，持续到第 ${assist.expiresDay} 天。`
+  return `${npc?.name ?? '同伴'}正在协助：${label}，持续到第 ${assist.expiresDay} 天。旅行或探索时可能触发同行片段。`
+}
+
+function describeCompanionRoadHint(game) {
+  const assist = getAssist(game)
+  if (!assist) return '邀请熟悉的人物同行后，旅途和探索中会出现额外片段。'
+  const npc = npcById[assist.npcId]
+  const rel = game.relationships?.[assist.npcId] ?? createEmptyRelationships()[assist.npcId]
+  const style = {
+    route: '会替你盯住车辙、驿站和绕路成本。',
+    scout: '会先一步确认岔路、传闻和可疑地标。',
+    guard: '会把守夜、护车和突发危险放在心上。',
+    bargain: '会在市面、人情和临时订单上帮你开口。',
+  }[assist.type]
+  return `${npc?.name ?? '同伴'}同行至第 ${assist.expiresDay} 天，好感 ${rel.affection ?? 0}/100；${style}`
 }
 
 function getNpcAssistType(npcId) {
@@ -1505,6 +1522,56 @@ function getNpcAssistType(npcId) {
   if (['kael', 'rhea', 'selene'].includes(npcId)) return 'guard'
   if (['naya', 'mira'].includes(npcId)) return 'scout'
   return 'route'
+}
+
+function createCompanionMoment(game, mode = 'travel') {
+  const assist = getAssist(game)
+  if (!assist || game.combat) return null
+  const npc = npcById[assist.npcId]
+  if (!npc) return null
+  const rel = game.relationships?.[npc.id] ?? createEmptyRelationships()[npc.id]
+  const location = locationsById[game.location] ?? LOCATIONS[0]
+  const chance = clamp(0.22 + Math.floor((rel.affection ?? 0) / 25) * 0.04 + (mode === 'explore' ? 0.06 : 0), 0.18, 0.42)
+  if (Math.random() > chance) return null
+
+  const localGoods = LOCATION_TRAITS[location.id]?.localGoods ?? GOODS.map((good) => good.id)
+  const goodId = pick(npc.likes.filter((id) => localGoods.includes(id)).length ? npc.likes.filter((id) => localGoods.includes(id)) : localGoods)
+  const companionText = {
+    lina: [
+      { kind: 'market', goodId, factor: rand(108, 122) / 100, text: `莉娜在${location.name}听完两桌闲价，替你判断${goodsById[goodId].name}还有一小段抬价空间。` },
+      { kind: 'gold', gold: rand(35, 85), text: '莉娜把一张临时拍卖席位转给熟人，回头分给你一袋轻快的介绍费。' },
+    ],
+    kael: [
+      { kind: 'pressure', pressure: -rand(2, 4), text: `凯尔在${mode === 'explore' ? '探索前' : '过夜时'}重排守卫，让车队少了几分被盯上的紧张。` },
+      { kind: 'hp', hp: rand(10, 22), text: '凯尔沉默地替你处理旧伤，绷带打得很紧，语气却放得很轻。' },
+    ],
+    mira: [
+      { kind: 'rumor', text: '米拉把沿途听来的价码写成表格，删掉两条假消息，又补上一组更可信的明日风向。' },
+      { kind: 'market', goodId, factor: rand(82, 94) / 100, text: `米拉算出${goodsById[goodId].name}短线供给偏多，提醒你别在本地追高。` },
+    ],
+    selene: [
+      { kind: 'hp', hp: rand(16, 30), text: '塞琳把草木热饮递给你，药香慢慢压下疲惫，连车夫都安静了些。' },
+      { kind: 'goods', goodId: 'herb', amount: rand(1, 2), text: '塞琳在路边认出一丛银叶药草，顺手补进你的药包。' },
+    ],
+    oran: [
+      { kind: 'pressure', pressure: -rand(1, 3), text: '奥兰趴到车底敲了半晌，修好一处松动的轴扣，坏路也不再那么磨人。' },
+      { kind: 'goods', goodId: 'gear', amount: 1, text: '奥兰从旧零件里挑出还能用的机关件，嫌弃地说别浪费。' },
+    ],
+    naya: [
+      { kind: 'pressure', pressure: -rand(2, 4), text: '娜雅用几个暗号换来一段清净路线，麻烦像沙风一样绕开了车队。' },
+      { kind: 'gold', gold: rand(45, 95), text: '娜雅把一条不宜公开的买主线索卖得刚好，分账时只笑着看你。' },
+    ],
+    avel: [
+      { kind: 'rep', rep: 1, text: '阿维尔替你写了一封体面的拜帖，本地账房终于愿意正眼看你的商号。' },
+      { kind: 'gold', gold: rand(50, 110), text: '阿维尔用贵族名册替你约到一位小客户，对方付钱很快，也很怕失礼。' },
+    ],
+    rhea: [
+      { kind: 'loot', rewards: generateRewards(location.risk, rand(25, 75), location.id), text: '蕾娅发现一条不在地图上的侧道，危险没少，但旧箱子也没有空着。' },
+      { kind: 'goods', goodId: 'relic', amount: 1, text: '蕾娅从碎石下摸出一枚小遗物，眨眨眼说见者有份。' },
+    ],
+  }
+  const picked = pick(companionText[npc.id] ?? companionText.lina)
+  return { ...picked, kind: 'companionMoment', effect: picked.kind, npcId: npc.id, affection: rand(3, 7), route: assist.type }
 }
 
 function createNpcQuestOutcome(game, npc, rel) {
@@ -1985,6 +2052,50 @@ function applyEvent(game, event) {
       `${event.text}${detail.length ? ` ${detail.join('，')}。` : ''}`,
     )
   }
+  if (event.kind === 'companionMoment') {
+    const npc = npcById[event.npcId]
+    let resolved = updateRelationship(next, event.npcId, (rel) => ({
+      ...rel,
+      affection: clamp(rel.affection + event.affection, 0, 100),
+      interactions: rel.interactions + 1,
+      stage: relationStage({ ...rel, affection: clamp(rel.affection + event.affection, 0, 100) }),
+    }))
+    const pressureDelta = event.pressure ?? 0
+    resolved = {
+      ...resolved,
+      gold: resolved.gold + (event.gold ?? 0),
+      hp: resolved.hp + (event.hp ?? 0),
+      reputation: resolved.reputation + (event.rep ?? 0),
+      riskPressure: clamp((resolved.riskPressure ?? 0) + pressureDelta, 0, 24),
+      stats: {
+        ...resolved.stats,
+        companionMoments: (resolved.stats.companionMoments ?? 0) + 1,
+        pressureCleared: (resolved.stats.pressureCleared ?? 0) + (pressureDelta < 0 ? Math.abs(pressureDelta) : 0),
+      },
+    }
+    if (event.goodId && event.amount) {
+      resolved = { ...resolved, inventory: { ...resolved.inventory, [event.goodId]: (resolved.inventory[event.goodId] ?? 0) + event.amount } }
+    }
+    if (event.factor && event.goodId) {
+      resolved = { ...resolved, market: { ...resolved.market, [event.goodId]: Number(clamp((resolved.market[event.goodId] ?? 1) * event.factor, 0.48, 1.9).toFixed(2)) } }
+    }
+    if (event.rewards) resolved = applyRewards(resolved, event.rewards)
+    if (event.effect === 'rumor' || event.rumor) resolved = { ...resolved, rumors: createRumors(resolved.day, getEquipmentPassives(resolved).rumorBonus) }
+    const detail = []
+    if (event.gold) detail.push(`金币 +${event.gold}`)
+    if (event.hp) detail.push(`生命 +${event.hp}`)
+    if (event.rep) detail.push(`声望 +${event.rep}`)
+    if (event.pressure) detail.push(`风险压力 ${event.pressure > 0 ? '+' : ''}${event.pressure}`)
+    if (event.goodId && event.amount) detail.push(`${goodsById[event.goodId].name} ×${event.amount}`)
+    if (event.factor && event.goodId) detail.push(`${goodsById[event.goodId].name}行情变动`)
+    if (event.rewards) detail.push(`获得 ${describeRewards(event.rewards)}`)
+    if (event.effect === 'rumor' || event.rumor) detail.push('刷新明日风向')
+    return addTaggedLog(
+      awardGuild(addLocationMastery(resolved, resolved.location, 'social', 1), 'social', 10 + event.affection),
+      '同行',
+      `${npc?.name ?? '同伴'}的同行片段：${event.text} 好感 +${event.affection}${detail.length ? `，${detail.join('，')}` : ''}。`,
+    )
+  }
   if (event.kind === 'cost') {
     return addLog({ ...next, gold: Math.max(0, next.gold - event.gold) }, event.text)
   }
@@ -2107,6 +2218,8 @@ function App() {
   const activeNpc = npcById[selectedNpcId] ?? knownNpcs[0]
   const activeRel = activeNpc ? game.relationships?.[activeNpc.id] : null
   const activeNpcInteractedToday = Boolean(activeRel && (activeRel.lastInteractionDay ?? 0) === game.day)
+  const activeAssist = getAssist(game)
+  const activeAssistNpc = activeAssist ? npcById[activeAssist.npcId] : null
   const tabs = [
     ['trade', '跑商'],
     ['adventure', '冒险'],
@@ -2208,7 +2321,9 @@ function App() {
       )
       const traveled = applyEvent(moved, createTravelEvent(current, destination, current.routeCondition))
       const incident = createRouteContractIncident(current, destination, current.routeCondition)
-      return maybePartnerEvent(incident ? applyEvent(traveled, incident) : traveled)
+      const withIncident = incident ? applyEvent(traveled, incident) : traveled
+      const companionMoment = createCompanionMoment(withIncident, 'travel')
+      return maybePartnerEvent(companionMoment ? applyEvent(withIncident, companionMoment) : withIncident)
     })
   }
 
@@ -2245,7 +2360,9 @@ function App() {
         }, current.location, 'explores', 1), 'explore', 18 + location.risk * 4),
         `第 ${current.day + 1} 天，你花费 ${exploreCost} 金币探索${location.name}。${assist?.type === 'scout' ? ' 同伴提前探路，补给消耗降低。' : ''}${routeText}${sceneText}${leadText}${newsText}`,
       )
-      return maybePartnerEvent(applyEvent(explored, createExploreEvent(current, current.routeCondition)))
+      const withEvent = applyEvent(explored, createExploreEvent(current, current.routeCondition))
+      const companionMoment = createCompanionMoment(withEvent, 'explore')
+      return maybePartnerEvent(companionMoment ? applyEvent(withEvent, companionMoment) : withEvent)
     })
   }
 
@@ -3102,6 +3219,15 @@ function App() {
               <Slot label="饰品" item={getEquippedItem(game, 'trinket')} />
             </div>
             <p className="assist-note">{describeAssist(game)}</p>
+            {activeAssist && (
+              <article className="companion-road-card">
+                {activeAssistNpc && npcArt[activeAssistNpc.id] && <img src={npcArt[activeAssistNpc.id]} alt="" loading="lazy" />}
+                <span>
+                  <strong>{activeAssistNpc?.name ?? '同伴'} · 同行路感</strong>
+                  <small>{describeCompanionRoadHint(game)}</small>
+                </span>
+              </article>
+            )}
             <div className="guild-card">
               <strong>商会等级 {game.guild?.level ?? 1}</strong>
               <span>经验 {game.guild?.xp ?? 0} · 主路线 {routeLabels[getGuildRoute(game)]}</span>

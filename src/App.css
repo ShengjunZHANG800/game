@@ -675,6 +675,7 @@ button:disabled {
 .equipment-market-note,
 .guild-card span,
 .guild-card small,
+.companion-road-card small,
 .camp-card span,
 .commission-card span,
 .commission-card small {
@@ -697,6 +698,7 @@ button:disabled {
 }
 
 .guild-card,
+.companion-road-card,
 .commission-card {
   display: grid;
   gap: 7px;
@@ -708,8 +710,30 @@ button:disabled {
 }
 
 .guild-card strong,
+.companion-road-card strong,
 .commission-card strong {
   color: #fff6dd;
+}
+
+.companion-road-card {
+  grid-template-columns: 68px minmax(0, 1fr);
+  align-items: center;
+  border-color: rgba(201, 151, 255, 0.28);
+  background: rgba(58, 44, 76, 0.2);
+}
+
+.companion-road-card img {
+  width: 68px;
+  height: 52px;
+  object-fit: cover;
+  border: 1px solid rgba(201, 151, 255, 0.28);
+  border-radius: 6px;
+}
+
+.companion-road-card span {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
 }
 
 .commission-list,
@@ -1058,7 +1082,8 @@ button:disabled {
 }
 
 .tag-人物,
-.tag-社交 {
+.tag-社交,
+.tag-同行 {
   color: #d7a2ff;
 }
 
