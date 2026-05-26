@@ -143,6 +143,8 @@ const ACHIEVEMENTS = [
   { id: 'extremeRoad', name: '极危归来', text: '从极危地点或路线中胜出 3 次。', test: (s) => (s.stats.extremeSurvivals ?? 0) >= 3 },
   { id: 'companionRoad', name: '同行默契', text: '邀请人物协助 8 次。', test: (s) => (s.stats.companionHelps ?? 0) >= 8 },
   { id: 'commissioner', name: '委托熟手', text: '完成 10 个本地委托。', test: (s) => (s.stats.commissionsDone ?? 0) >= 10 },
+  { id: 'routeContractor', name: '第一张跨城商单', text: '完成 1 个跨城商单。', test: (s) => (s.stats.routeContractsDone ?? 0) >= 1 },
+  { id: 'routeNetworker', name: '商路承运人', text: '完成 6 个跨城商单。', test: (s) => (s.stats.routeContractsDone ?? 0) >= 6 },
   { id: 'guildRising', name: '小商会成形', text: '商会等级达到 3。', test: (s) => (s.guild?.level ?? 1) >= 3 },
   { id: 'guildHouse', name: '自立商号', text: '商会等级达到 6。', test: (s) => (s.guild?.level ?? 1) >= 6 },
   { id: 'localExpert', name: '地方通', text: '任一地点熟练度达到 4 级。', test: (s) => LOCATIONS.some((location) => getMasteryLevel(s, location.id) >= 4) },
@@ -400,6 +402,15 @@ const COMMISSION_TEXT = {
   bounty: ['清理威胁', '护送短程', '追查盗匪', '夺回失货'],
   social: ['递送私信', '宴席引荐', '学术拜访', '密谈牵线'],
 }
+
+const ROUTE_CONTRACT_TEXT = [
+  '封蜡急单',
+  '整车承运',
+  '行会调货',
+  '贵客预订',
+  '压舱补缺',
+  '节庆备采',
+]
 
 const ROUTE_CONDITIONS = [
   { id: 'clear', name: '晴稳商路', weight: 18, travelCost: 0.92, exploreCost: 0.96, danger: -0.03, pressure: -1, text: '驿站补给充足，车辙干爽，适合赶路和压低消耗。' },
@@ -698,6 +709,57 @@ function createFactionFavorEvent(game, location) {
   return pick(events)()
 }
 
+function getDemandGoods(locationId) {
+  const location = locationsById[locationId]
+  const premiumGoods = Object.entries(location?.mod ?? {})
+    .filter(([, factor]) => factor >= 1.12)
+    .map(([goodId]) => goodId)
+  const localGoods = LOCATION_TRAITS[locationId]?.localGoods ?? []
+  return [...new Set([...premiumGoods, ...localGoods])].filter((goodId) => goodsById[goodId])
+}
+
+function createRouteContract(originId, day) {
+  const origin = locationsById[originId] ?? LOCATIONS[0]
+  const candidates = LOCATIONS.filter((location) => location.id !== origin.id)
+  const target = pick(candidates)
+  const demandGoods = getDemandGoods(target.id)
+  const good = goodsById[pick(demandGoods.length ? demandGoods : GOODS.map((item) => item.id))]
+  const amount = rand(1, target.risk >= 4 ? 3 : 2)
+  const riskSpan = Math.max(origin.risk, target.risk)
+  const deadline = day + 3 + Math.ceil((origin.risk + target.risk) / 3)
+  const rewardGold = Math.round(good.base * amount * (1.55 + riskSpan * 0.18) + target.cost * rand(3, 6))
+  return {
+    id: `${day}-${origin.id}-${target.id}-${good.id}-${amount}`,
+    day,
+    originId: origin.id,
+    targetId: target.id,
+    goodId: good.id,
+    amount,
+    deadline,
+    rewardGold,
+    factionId: LOCATION_TRAITS[target.id]?.factionId,
+    text: `${pick(ROUTE_CONTRACT_TEXT)}：把${good.name} ×${amount}送到${target.name}。`,
+  }
+}
+
+function describeRouteContract(contract) {
+  if (!contract) return '今日没有可靠跨城商单。'
+  const origin = locationsById[contract.originId]
+  const target = locationsById[contract.targetId]
+  return `${contract.text} 起点 ${origin?.name ?? '本地'}，目的地 ${target?.name ?? '远方'}，期限第 ${contract.deadline} 天。`
+}
+
+function getRouteContractStatus(game, contract = game.activeRouteContract) {
+  if (!contract) return '暂无已接商单'
+  const target = locationsById[contract.targetId]
+  const good = goodsById[contract.goodId]
+  const have = game.inventory?.[contract.goodId] ?? 0
+  const late = game.day > contract.deadline
+  if (game.location !== contract.targetId) return `需前往${target?.name ?? '目的地'}${late ? '（已逾期）' : ''}`
+  if (have < contract.amount) return `需要 ${good?.name ?? '货物'} ×${contract.amount}，当前 ${have}${late ? '（已逾期）' : ''}`
+  return late ? '可逾期交付，奖励降低' : '可完成'
+}
+
 function createCommissions(locationId, day) {
   const location = locationsById[locationId]
   const trait = LOCATION_TRAITS[locationId] ?? {}
@@ -772,6 +834,7 @@ function normalizeStats(baseStats, stats = {}) {
     factionGain: stats.factionGain ?? 0,
     companionHelps: stats.companionHelps ?? 0,
     commissionsDone: stats.commissionsDone ?? 0,
+    routeContractsDone: stats.routeContractsDone ?? 0,
     pressureCleared: stats.pressureCleared ?? 0,
     npcQuests: stats.npcQuests ?? 0,
     landmarksFound: stats.landmarksFound ?? 0,
@@ -900,6 +963,7 @@ function advanceDay(game, nextDay, locationId = game.location) {
     day: nextDay,
     rumors: createRumors(nextDay, passives.rumorBonus),
     commissions: createCommissions(locationId, nextDay),
+    routeContract: createRouteContract(locationId, nextDay),
     routeCondition: createRouteCondition(nextDay, locationId),
     localScene: createLocalScene(nextDay, locationId),
   }
@@ -1085,6 +1149,8 @@ function createInitialGame() {
     routeCondition,
     localScene,
     commissions,
+    routeContract: createRouteContract(startLocation.id, 1),
+    activeRouteContract: null,
     factions: createInitialFactions(),
     guild: createInitialGuild(),
     locationMastery: createInitialLocationMastery(),
@@ -1113,6 +1179,7 @@ function createInitialGame() {
       factionGain: 0,
       companionHelps: 0,
       commissionsDone: 0,
+      routeContractsDone: 0,
       pressureCleared: 0,
       npcQuests: 0,
       landmarksFound: 0,
@@ -1772,6 +1839,8 @@ function encodeSave(game) {
     routeCondition: game.routeCondition,
     localScene: game.localScene,
     commissions: game.commissions,
+    routeContract: game.routeContract,
+    activeRouteContract: game.activeRouteContract,
     factions: game.factions,
     guild: game.guild,
     locationMastery: game.locationMastery,
@@ -1805,6 +1874,8 @@ function decodeSave(text) {
     routeCondition: payload.routeCondition ?? createRouteCondition(payload.day ?? 1, payload.location),
     localScene: payload.localScene ?? createLocalScene(payload.day ?? 1, payload.location),
     commissions: Array.isArray(payload.commissions) ? payload.commissions : createCommissions(payload.location, payload.day ?? 1),
+    routeContract: payload.routeContract ?? createRouteContract(payload.location, payload.day ?? 1),
+    activeRouteContract: payload.activeRouteContract ?? null,
     factions,
     guild: normalizeGuild(payload.guild),
     locationMastery: normalizeLocationMastery(payload.locationMastery),
@@ -2016,6 +2087,79 @@ function App() {
           equipmentOwned: (current.equipmentOwned ?? []).filter((owned) => owned.uid !== uid),
         },
         `在${locationsById[current.location].name}出售${item.name}，回收 ${revenue} 金币。`,
+      )
+    })
+  }
+
+  const acceptRouteContract = () => {
+    if (!canAct) return
+    commit((current) => {
+      if (current.activeRouteContract) return addTaggedLog(current, '商单', '已有跨城商单在途，先完成或放弃后再接新单。')
+      const contract = current.routeContract ?? createRouteContract(current.location, current.day)
+      return addTaggedLog(
+        { ...current, activeRouteContract: { ...contract, acceptedDay: current.day }, routeContract: null },
+        '商单',
+        `接下跨城商单：${describeRouteContract(contract)} 奖励 ${contract.rewardGold} 金币。`,
+      )
+    })
+  }
+
+  const completeRouteContract = () => {
+    if (!canAct) return
+    commit((current) => {
+      const contract = current.activeRouteContract
+      if (!contract) return current
+      const status = getRouteContractStatus(current, contract)
+      const target = locationsById[contract.targetId]
+      const good = goodsById[contract.goodId]
+      if (!['可完成', '可逾期交付，奖励降低'].includes(status)) {
+        return addTaggedLog(current, '商单', `跨城商单尚未完成：${status}。`)
+      }
+      const have = current.inventory[contract.goodId] ?? 0
+      const late = current.day > contract.deadline
+      const rewardScale = 1 + getEquipmentPassives(current).commissionBonus + getGuildBonuses(current).commissionBonus + getFactionFavorBonus(current, contract.targetId).commissionBonus
+      const rewardGold = Math.round(contract.rewardGold * rewardScale * (late ? 0.45 : 1))
+      const factionGain = late ? 0 : 1
+      const factionId = contract.factionId
+      const next = awardGuild(addLocationMastery({
+        ...current,
+        gold: current.gold + rewardGold,
+        inventory: { ...current.inventory, [contract.goodId]: have - contract.amount },
+        routeContract: createRouteContract(current.location, current.day),
+        activeRouteContract: null,
+        factions: factionId ? { ...(current.factions ?? createInitialFactions()), [factionId]: (current.factions?.[factionId] ?? 0) + factionGain } : current.factions,
+        stats: {
+          ...current.stats,
+          trades: current.stats.trades + 1,
+          goodsMoved: current.stats.goodsMoved + contract.amount,
+          profit: current.stats.profit + rewardGold,
+          routeContractsDone: (current.stats.routeContractsDone ?? 0) + 1,
+          factionGain: (current.stats.factionGain ?? 0) + factionGain,
+        },
+      }, contract.targetId, 'trades', contract.amount), 'trade', late ? 16 : 36 + contract.amount * 8)
+      return addTaggedLog(
+        next,
+        '商单',
+        `${late ? '逾期交付' : '完成跨城商单'}：向${target?.name ?? '目的地'}交付 ${good?.name ?? '货物'} ×${contract.amount}，获得 ${rewardGold} 金币${factionGain ? '和目的地势力好感 +1' : '，但逾期未增加势力好感'}。`,
+      )
+    })
+  }
+
+  const abandonRouteContract = () => {
+    if (!canAct) return
+    commit((current) => {
+      if (!current.activeRouteContract) return current
+      const contract = current.activeRouteContract
+      const target = locationsById[contract.targetId]
+      return addTaggedLog(
+        {
+          ...current,
+          activeRouteContract: null,
+          routeContract: createRouteContract(current.location, current.day),
+          reputation: Math.max(0, current.reputation - 1),
+        },
+        '商单',
+        `放弃发往${target?.name ?? '目的地'}的跨城商单，商路信誉暂时受损，声望 -1。`,
       )
     })
   }
@@ -2625,6 +2769,26 @@ function App() {
 
           <section className="panel commission-panel">
             <PanelTitle kicker="委托" title="本地委托板" />
+            <div className="route-contract-list">
+              {game.activeRouteContract ? (
+                <article className="commission-card route-contract-card active">
+                  <strong>在途商单 · {describeRouteContract(game.activeRouteContract)}</strong>
+                  <span>{getRouteContractStatus(game)}</span>
+                  <small>交付奖励 {Math.round(game.activeRouteContract.rewardGold * (game.day > game.activeRouteContract.deadline ? 0.45 : 1))} 金币 · 准时抵达可获目的地势力好感</small>
+                  <div className="button-row compact">
+                    <button type="button" disabled={!canAct} onClick={completeRouteContract}>交付商单</button>
+                    <button type="button" disabled={!canAct} onClick={abandonRouteContract}>放弃商单</button>
+                  </div>
+                </article>
+              ) : (
+                <article className="commission-card route-contract-card">
+                  <strong>跨城商单 · {describeRouteContract(game.routeContract)}</strong>
+                  <span>接单后需自行备货并送达目的地。</span>
+                  <small>奖励 {game.routeContract?.rewardGold ?? 0} 金币 · 准时完成可获目的地势力好感 +1</small>
+                  <button type="button" disabled={!canAct || !game.routeContract} onClick={acceptRouteContract}>接下商单</button>
+                </article>
+              )}
+            </div>
             <div className="commission-list">
               {(game.commissions ?? []).map((commission) => (
                 <article key={commission.id} className="commission-card">
