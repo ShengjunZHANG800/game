@@ -523,6 +523,42 @@ button:disabled {
   background: rgba(43, 79, 57, 0.2);
 }
 
+.market-offer-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid rgba(240, 201, 106, 0.34);
+  border-radius: 8px;
+  background: rgba(88, 63, 33, 0.32);
+}
+
+.market-offer-card strong {
+  display: block;
+  color: #fff6dd;
+}
+
+.market-offer-card span,
+.market-offer-card small {
+  display: block;
+  margin-top: 4px;
+  color: #d6c7aa;
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+.market-offer-card small {
+  color: #ffd07a;
+  font-size: 12px;
+}
+
+.market-offer-card.is-empty {
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+}
+
 .contract-good-tag {
   width: fit-content;
   padding: 3px 7px;
@@ -1077,7 +1113,8 @@ button:disabled {
 
 .tag-交易,
 .tag-委托,
-.tag-商单 {
+.tag-商单,
+.tag-摊位 {
   color: #9fe3b5;
 }
 
@@ -1252,6 +1289,10 @@ textarea {
   }
 
   .market-row {
+    grid-template-columns: 1fr;
+  }
+
+  .market-offer-card {
     grid-template-columns: 1fr;
   }
 

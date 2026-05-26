@@ -126,6 +126,7 @@ const ACHIEVEMENTS = [
   { id: 'connected', name: '各地都有熟人', text: '触发 15 次随机事件。', test: (s) => s.stats.events >= 15 },
   { id: 'streetwise', name: '街巷消息人', text: '追查 8 条本地线索。', test: (s) => (s.stats.localLeadsFollowed ?? 0) >= 8 },
   { id: 'campPlanner', name: '夜营老手', text: '执行 10 次夜营策略。', test: (s) => (s.stats.campActions ?? 0) >= 10 },
+  { id: 'stallCloser', name: '摊位快手', text: '成交 8 次每日市集摊位。', test: (s) => (s.stats.marketOffersDone ?? 0) >= 8 },
   { id: 'profiteer', name: '算盘响亮', text: '累计净收入达到 2000。', test: (s) => s.stats.profit >= 2000 },
   { id: 'longRun', name: '三十日商路', text: '坚持到第 30 天。', test: (s) => s.day >= 30 },
   { id: 'firstBond', name: '第一次心动', text: '结识第一位人物。', test: (s) => (s.knownNpcIds?.length ?? 0) >= 1 },
@@ -423,6 +424,19 @@ const LOCAL_LEAD_TEMPLATES = [
   { type: 'landmark', title: '旧地图角', weight: 10, cost: [20, 48], text: '一张旧地图角落写着本地还没公开的去处。' },
   { type: 'security', title: '巡路口信', weight: 9, cost: [12, 30], text: '驿站跑腿带来一条可避开麻烦的巡路口信。' },
 ]
+
+const MARKET_OFFER_TEXT = {
+  bulkBuy: [
+    { title: '清仓筐货', text: '摊主急着收摊，愿意把整筐货物按低于柜台的价钱打包给你。' },
+    { title: '船脚散箱', text: '脚夫多卸出一箱货，只求今天有人一次搬走。' },
+    { title: '熟摊留货', text: '本地熟摊替你压下一批好货，但只等到今天收市。' },
+  ],
+  bulkSell: [
+    { title: '急收短单', text: '本地账房临时补缺，愿意用高于柜台的价格吃下一小批货。' },
+    { title: '宴席点货', text: '掌柜赶着备席，点名要一批能立刻交割的货。' },
+    { title: '行会补仓', text: '行会仓库短缺，愿意给守时的行商多加一点辛苦钱。' },
+  ],
+}
 
 const CAMP_ACTIONS = [
   { id: 'repair', name: '补轮整车', route: 'explore', cost: 24, text: '修补车轮、检查药包，恢复生命并清掉一点风险压力。' },
@@ -931,6 +945,7 @@ function normalizeStats(baseStats, stats = {}) {
     localLeadsFollowed: stats.localLeadsFollowed ?? 0,
     campActions: stats.campActions ?? 0,
     companionMoments: stats.companionMoments ?? 0,
+    marketOffersDone: stats.marketOffersDone ?? 0,
     pressureCleared: stats.pressureCleared ?? 0,
     npcQuests: stats.npcQuests ?? 0,
     landmarksFound: stats.landmarksFound ?? 0,
@@ -1070,6 +1085,59 @@ function describeLocalLead(lead) {
   return `${location?.name ?? '本地'}线索：${lead.title}，${lead.text} ${detail}花费 ${lead.cost} 金币。`
 }
 
+function createMarketOffer(day, locationId) {
+  const location = locationsById[locationId] ?? LOCATIONS[0]
+  const localGoods = LOCATION_TRAITS[location.id]?.localGoods ?? GOODS.map((good) => good.id)
+  const demandGoods = getDemandGoods(location.id)
+  const type = Math.random() < 0.56 ? 'bulkBuy' : 'bulkSell'
+  const text = pick(MARKET_OFFER_TEXT[type])
+  const goodId = type === 'bulkBuy'
+    ? pick(localGoods)
+    : pick(demandGoods.length ? demandGoods : GOODS.map((good) => good.id))
+  const amount = type === 'bulkBuy' ? rand(2, location.risk >= 4 ? 6 : 4) : rand(1, location.risk >= 4 ? 4 : 3)
+  const factor = type === 'bulkBuy' ? rand(68, 84) / 100 : rand(116, 142) / 100
+  return {
+    id: `${day}-${location.id}-${type}-${goodId}-${amount}`,
+    day,
+    locationId: location.id,
+    type,
+    goodId,
+    amount,
+    factor,
+    title: text.title,
+    text: text.text,
+  }
+}
+
+function getMarketOfferQuote(game, offer = game.marketOffer) {
+  if (!offer) return null
+  const good = goodsById[offer.goodId]
+  if (!good) return null
+  const unitMode = offer.type === 'bulkSell' ? 'sell' : 'buy'
+  const unit = getPrice(game, offer.goodId, unitMode)
+  const total = Math.max(1, Math.round(unit * offer.amount * offer.factor))
+  const counter = unit * offer.amount
+  return {
+    good,
+    unit,
+    total,
+    counter,
+    delta: Math.abs(counter - total),
+  }
+}
+
+function describeMarketOffer(game) {
+  const offer = game.marketOffer
+  if (!offer) return '今日摊位已经成交或散场。'
+  const location = locationsById[offer.locationId]
+  const quote = getMarketOfferQuote(game, offer)
+  if (!quote) return '今日摊位还在等可靠报价。'
+  if (offer.type === 'bulkBuy') {
+    return `${location?.name ?? '本地'}摊位：${offer.title}，${offer.text} ${quote.good.name} ×${offer.amount} 打包价 ${quote.total} 金币，比柜台省 ${quote.delta}。`
+  }
+  return `${location?.name ?? '本地'}摊位：${offer.title}，${offer.text} 收 ${quote.good.name} ×${offer.amount}，愿付 ${quote.total} 金币，比柜台多 ${quote.delta}。`
+}
+
 function getCampActionCost(game, action) {
   const location = locationsById[game.location] ?? LOCATIONS[0]
   const mastery = getMasteryLevel(game, game.location)
@@ -1118,6 +1186,7 @@ function advanceDay(game, nextDay, locationId = game.location) {
     rumors: createRumors(nextDay, passives.rumorBonus),
     commissions: createCommissions(locationId, nextDay),
     routeContract: createRouteContract(locationId, nextDay),
+    marketOffer: createMarketOffer(nextDay, locationId),
     routeCondition: createRouteCondition(nextDay, locationId),
     localScene: createLocalScene(nextDay, locationId),
     localLead: createLocalLead(nextDay, locationId),
@@ -1283,6 +1352,23 @@ function createInitialGame() {
   const routeCondition = createRouteCondition(1, startLocation.id)
   const localScene = createLocalScene(1, startLocation.id)
   const localLead = createLocalLead(1, startLocation.id)
+  const marketOffer = createMarketOffer(1, startLocation.id)
+  const market = rollMarket(startLocation.id, rumors, worldNews, localScene)
+  const initialQuoteState = {
+    location: startLocation.id,
+    market,
+    marketOffer,
+    inventory,
+    reputation: background.reputation,
+    equipmentOwned: [],
+    equipped: { weapon: null, armor: null, trinket: null },
+    factions: createInitialFactions(),
+    guild: createInitialGuild(),
+    baseAttack,
+    baseDefense,
+    baseMaxHp,
+    baseCapacity,
+  }
 
   return {
     version: VERSION,
@@ -1299,7 +1385,7 @@ function createInitialGame() {
     inventory,
     equipmentOwned: [],
     equipped: { weapon: null, armor: null, trinket: null },
-    market: rollMarket(startLocation.id, rumors, worldNews, localScene),
+    market,
     rumors,
     worldNews,
     routeCondition,
@@ -1307,6 +1393,7 @@ function createInitialGame() {
     localLead,
     commissions,
     routeContract: createRouteContract(startLocation.id, 1),
+    marketOffer,
     activeRouteContract: null,
     factions: createInitialFactions(),
     guild: createInitialGuild(),
@@ -1345,6 +1432,7 @@ function createInitialGame() {
       localLeadsFollowed: 0,
       campActions: 0,
       companionMoments: 0,
+      marketOffersDone: 0,
     },
     achievements: [],
     log: [
@@ -1353,6 +1441,7 @@ function createInitialGame() {
       `第 1 天：${describeRouteCondition(routeCondition)}`,
       `第 1 天：${describeLocalScene(localScene)}`,
       `第 1 天：${describeLocalLead(localLead)}`,
+      `第 1 天：${describeMarketOffer(initialQuoteState)}`,
       ...worldNews.map((news) => `第 1 天：${describeWorldNews(news)}`),
       ...rumors.map((rumor) => `第 1 天：${describeRumor(rumor)}`),
       ...START_LOG.slice(1).map((entry) => `第 1 天：${entry}`),
@@ -1448,6 +1537,7 @@ function getTodayFocus(game) {
     condition: getRouteConditionEffect(game.routeCondition).name,
     localScene: game.localScene?.name ?? '平稳市面',
     localLead: game.localLead ? `${game.localLead.title} · ${game.localLead.cost} 金币` : '暂无线索',
+    marketOffer: game.marketOffer ? `${game.marketOffer.title} · ${goodsById[game.marketOffer.goodId]?.name ?? '本地货'}` : '摊位已散',
     commission: commission ? `${commissionLabels[commission.type]}：${commission.text}` : '今日暂无委托',
     contract: getRouteContractFocus(game),
     mastery: `本地熟练度 ${getMasteryLevel(game, game.location)} 级 · ${getFactionFavor(game).tier?.name ?? '普通往来'}`,
@@ -2144,6 +2234,7 @@ function encodeSave(game) {
     localLead: game.localLead,
     commissions: game.commissions,
     routeContract: game.routeContract,
+    marketOffer: game.marketOffer,
     activeRouteContract: game.activeRouteContract,
     factions: game.factions,
     guild: game.guild,
@@ -2181,6 +2272,7 @@ function decodeSave(text) {
     localLead: payload.localLead ?? createLocalLead(payload.day ?? 1, payload.location),
     commissions: Array.isArray(payload.commissions) ? payload.commissions : createCommissions(payload.location, payload.day ?? 1),
     routeContract: payload.routeContract ?? createRouteContract(payload.location, payload.day ?? 1),
+    marketOffer: payload.marketOffer ?? createMarketOffer(payload.day ?? 1, payload.location),
     activeRouteContract: payload.activeRouteContract ?? null,
     factions,
     guild: normalizeGuild(payload.guild),
@@ -2214,6 +2306,7 @@ function App() {
   const todayFocus = useMemo(() => getTodayFocus(game), [game])
   const currentDiscoveries = getDiscoveredLandmarks(game, game.location)
   const currentDiscoveryTotal = landmarksByLocation[game.location]?.length ?? 0
+  const marketOfferQuote = getMarketOfferQuote(game)
   const knownNpcs = (game.knownNpcIds ?? []).map((id) => npcById[id]).filter(Boolean)
   const activeNpc = npcById[selectedNpcId] ?? knownNpcs[0]
   const activeRel = activeNpc ? game.relationships?.[activeNpc.id] : null
@@ -2281,6 +2374,56 @@ function App() {
         }, current.location, 'trades', amount), 'trade', Math.max(5, Math.round(revenue / 30))),
         '交易',
         `卖出 ${amount} 件${good.name}，收入 ${revenue} 金币。`,
+      )
+    })
+  }
+
+  const acceptMarketOffer = () => {
+    if (!canAct) return
+    commit((current) => {
+      const offer = current.marketOffer
+      if (!offer) return addTaggedLog(current, '摊位', '今天的临时摊位已经散场。')
+      const quote = getMarketOfferQuote(current, offer)
+      if (!quote) return current
+      const location = locationsById[current.location]
+      const offerStats = {
+        ...current.stats,
+        trades: current.stats.trades + 1,
+        goodsMoved: current.stats.goodsMoved + offer.amount,
+        marketOffersDone: (current.stats.marketOffersDone ?? 0) + 1,
+      }
+
+      if (offer.type === 'bulkBuy') {
+        const free = getTotals(current).capacity - getCargoUsed(current)
+        const need = quote.good.weight * offer.amount
+        if (current.gold < quote.total) return addTaggedLog(current, '摊位', `${offer.title}需要 ${quote.total} 金币。`)
+        if (free < need) return addTaggedLog(current, '摊位', `${offer.title}需要 ${need} 货舱空间，当前只剩 ${free}。`)
+        return addTaggedLog(
+          awardGuild(addLocationMastery({
+            ...current,
+            gold: current.gold - quote.total,
+            inventory: { ...current.inventory, [offer.goodId]: (current.inventory[offer.goodId] ?? 0) + offer.amount },
+            marketOffer: null,
+            stats: { ...offerStats, profit: current.stats.profit - quote.total },
+          }, current.location, 'trades', offer.amount), 'trade', Math.max(8, Math.round(quote.total / 28))),
+          '摊位',
+          `你在${location.name}成交${offer.title}，买下 ${quote.good.name} ×${offer.amount}，花费 ${quote.total} 金币。`,
+        )
+      }
+
+      const have = current.inventory[offer.goodId] ?? 0
+      if (have < offer.amount) return addTaggedLog(current, '摊位', `${offer.title}需要 ${quote.good.name} ×${offer.amount}，当前只有 ${have}。`)
+      return addTaggedLog(
+        awardGuild(addLocationMastery({
+          ...current,
+          gold: current.gold + quote.total,
+          inventory: { ...current.inventory, [offer.goodId]: have - offer.amount },
+          reputation: current.reputation + (quote.total >= 500 ? 1 : 0),
+          marketOffer: null,
+          stats: { ...offerStats, profit: current.stats.profit + quote.total },
+        }, current.location, 'trades', offer.amount), 'trade', Math.max(9, Math.round(quote.total / 24))),
+        '摊位',
+        `你在${location.name}接下${offer.title}，卖出 ${quote.good.name} ×${offer.amount}，收入 ${quote.total} 金币。`,
       )
     })
   }
@@ -3074,6 +3217,7 @@ function App() {
         <strong>路况：{todayFocus.condition}</strong>
         <strong>日势：{todayFocus.localScene}</strong>
         <strong>线索：{todayFocus.localLead}</strong>
+        <strong>摊位：{todayFocus.marketOffer}</strong>
         <strong>风险：{todayFocus.pressureText}</strong>
         <strong>夜营：{todayFocus.camp}</strong>
         <strong>商单：{todayFocus.contract}</strong>
@@ -3163,6 +3307,21 @@ function App() {
 
             <section className="panel market-panel trade-market-panel">
             <PanelTitle kicker="交易" title="当地市场" />
+            <article className={`market-offer-card ${game.marketOffer ? '' : 'is-empty'}`}>
+              <div>
+                <strong>{game.marketOffer ? game.marketOffer.title : '今日临时摊位已散'}</strong>
+                <span>{describeMarketOffer(game)}</span>
+                {game.marketOffer && marketOfferQuote && (
+                  <small>
+                    {game.marketOffer.type === 'bulkBuy' ? '买断' : '交割'} {marketOfferQuote.good.name} ×{game.marketOffer.amount}
+                    {' · '}柜台参考 {marketOfferQuote.counter} / 摊位价 {marketOfferQuote.total}
+                  </small>
+                )}
+              </div>
+              <button type="button" disabled={!canAct || !game.marketOffer} onClick={acceptMarketOffer}>
+                {game.marketOffer?.type === 'bulkSell' ? '交货成交' : '买断成交'}
+              </button>
+            </article>
             <div className="market-list">
               {GOODS.map((good) => {
                 const buy = getPrice(game, good.id, 'buy')
