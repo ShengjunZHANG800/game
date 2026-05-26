@@ -1,15 +1,17 @@
 .app-shell {
+  width: min(100%, 1720px);
   min-height: 100vh;
-  padding: 24px;
+  margin: 0 auto;
+  padding: clamp(16px, 2vw, 28px);
   color: #f6efe1;
 }
 
 .topbar {
   display: grid;
-  grid-template-columns: minmax(240px, 0.8fr) 1.8fr;
-  gap: 18px;
+  grid-template-columns: minmax(220px, 0.55fr) minmax(0, 1.45fr);
+  gap: 16px;
   align-items: stretch;
-  margin-bottom: 18px;
+  margin-bottom: 16px;
 }
 
 .eyebrow,
@@ -80,8 +82,9 @@ button:disabled {
 
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(110px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
   gap: 10px;
+  min-width: 0;
 }
 
 .stat,
@@ -114,7 +117,7 @@ button:disabled {
 }
 
 .today-focus {
-  grid-template-columns: auto repeat(5, minmax(0, 1fr));
+  grid-template-columns: max-content repeat(auto-fit, minmax(150px, 1fr));
   background: rgba(33, 44, 43, 0.92);
 }
 
@@ -182,6 +185,11 @@ button:disabled {
 }
 
 .today-focus strong {
+  min-height: 100%;
+  padding: 8px 10px;
+  border: 1px solid rgba(142, 230, 168, 0.12);
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.14);
   font-size: 13px;
 }
 
@@ -290,9 +298,10 @@ button:disabled {
 
 .game-grid {
   display: grid;
-  grid-template-columns: minmax(240px, 0.9fr) minmax(420px, 1.65fr) minmax(300px, 1fr);
+  grid-template-columns: minmax(250px, 0.82fr) minmax(430px, 1.52fr) minmax(290px, 0.92fr);
   gap: 18px;
   align-items: stretch;
+  min-width: 0;
 }
 
 .workbench .records-log-panel,
@@ -351,7 +360,7 @@ button:disabled {
 }
 
 .view-trade .game-grid {
-  grid-template-columns: minmax(260px, 0.85fr) minmax(420px, 1.55fr) minmax(280px, 0.85fr);
+  grid-template-columns: minmax(280px, 0.78fr) minmax(460px, 1.5fr) minmax(290px, 0.82fr);
 }
 
 .view-equipment .equipment-shop-row {
@@ -372,6 +381,7 @@ button:disabled {
 
 .panel {
   padding: 16px;
+  min-width: 0;
 }
 
 .travel-panel,
@@ -394,11 +404,14 @@ button:disabled {
 .side-stack {
   display: grid;
   gap: 10px;
+  min-width: 0;
 }
 
 .location-card {
   display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
   gap: 8px;
+  align-items: start;
   width: 100%;
   padding: 12px;
   text-align: left;
@@ -406,8 +419,10 @@ button:disabled {
 }
 
 .location-thumb {
+  grid-row: 1 / span 4;
   width: 100%;
-  aspect-ratio: 16 / 7;
+  min-height: 88px;
+  aspect-ratio: 1;
   object-fit: cover;
   border: 1px solid rgba(240, 201, 106, 0.2);
   border-radius: 6px;
@@ -450,6 +465,7 @@ button:disabled {
 }
 
 .location-actions {
+  grid-column: 2;
   justify-content: flex-start;
 }
 
@@ -536,7 +552,7 @@ button:disabled {
 }
 
 .market-list {
-  max-height: 720px;
+  max-height: min(72vh, 760px);
   padding-right: 4px;
   overflow: auto;
 }
@@ -544,7 +560,7 @@ button:disabled {
 .market-row,
 .equipment-row {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) 80px auto;
+  grid-template-columns: minmax(220px, 1fr) minmax(70px, auto) minmax(124px, auto);
   gap: 10px;
   align-items: center;
   padding: 12px;
@@ -572,6 +588,12 @@ button:disabled {
   min-width: 58px;
   padding: 4px 8px;
   font-size: 13px;
+}
+
+.market-row .button-row.compact {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(58px, 1fr));
+  justify-content: stretch;
 }
 
 .inventory-list {
@@ -728,6 +750,7 @@ button:disabled {
 .center-stack {
   align-self: stretch;
   grid-template-rows: auto 1fr;
+  min-height: 0;
 }
 
 .background-card span,
@@ -1006,6 +1029,10 @@ textarea {
     max-height: none;
   }
 
+  .location-card {
+    grid-template-columns: 120px minmax(0, 1fr);
+  }
+
   .log-panel {
     position: static;
   }
@@ -1038,6 +1065,16 @@ textarea {
 
   .latest-event {
     grid-template-columns: 1fr;
+    position: static;
+  }
+
+  .today-focus {
+    grid-template-columns: 1fr;
+  }
+
+  .tab-nav {
+    position: sticky;
+    top: 0;
   }
 
   .location-hero,
@@ -1069,6 +1106,20 @@ textarea {
 
   .market-row {
     grid-template-columns: 1fr;
+  }
+
+  .location-card {
+    grid-template-columns: 1fr;
+  }
+
+  .location-thumb {
+    grid-row: auto;
+    min-height: 0;
+    aspect-ratio: 16 / 7;
+  }
+
+  .location-actions {
+    grid-column: auto;
   }
 
   .equipment-shop-row .equipment-list,
