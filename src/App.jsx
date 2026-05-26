@@ -130,6 +130,7 @@ const ACHIEVEMENTS = [
   { id: 'stallRegular', name: '熟摊照面', text: '任意摊主信任达到 5。', test: (s) => Object.values(s.stallRelations ?? {}).some((rel) => (rel.trust ?? 0) >= 5) },
   { id: 'timekeeper', name: '行程账本', text: '累计记录 300 秒行动耗时。', test: (s) => (s.elapsedSeconds ?? s.stats.timeSpent ?? 0) >= 300 },
   { id: 'firstChapter', name: '篇章开卷', text: '推进 1 次故事篇章。', test: (s) => (s.stats.storyChapters ?? 0) >= 1 },
+  { id: 'storyArchivist', name: '旧路手札', text: '手札记录 10 条故事、人物或地点条目。', test: (s) => getStoryJournalEntries(s).length >= 10 },
   { id: 'whiteTowerStory', name: '白塔旧契', text: '完成主线“白塔旧契”。', test: (s) => (s.stories?.main?.whiteTowerLedger ?? 0) >= 5 },
   { id: 'profiteer', name: '算盘响亮', text: '累计净收入达到 2000。', test: (s) => s.stats.profit >= 2000 },
   { id: 'longRun', name: '三十日商路', text: '坚持到第 30 天。', test: (s) => s.day >= 30 },
@@ -552,6 +553,7 @@ const NPC_STORY_ARCS = {
   lina: {
     id: 'linaAuctionVow',
     npcId: 'lina',
+    type: 'npc',
     name: '莉娜：落槌之前',
     blurb: '她习惯把真心藏在拍卖节奏里，直到一份被调包的拍品把你们推到同一张暗桌前。',
     steps: [
@@ -563,6 +565,7 @@ const NPC_STORY_ARCS = {
   kael: {
     id: 'kaelSnowOath',
     npcId: 'kael',
+    type: 'npc',
     name: '凯尔：雪线誓言',
     blurb: '凯尔很少解释旧伤，但北境风雪总会把沉默的人推回誓言前。',
     steps: [
@@ -574,6 +577,7 @@ const NPC_STORY_ARCS = {
   mira: {
     id: 'miraStarProof',
     npcId: 'mira',
+    type: 'npc',
     name: '米拉：星图旁注',
     blurb: '米拉相信公式，却发现最关键的误差总和你有关。',
     steps: [
@@ -585,6 +589,7 @@ const NPC_STORY_ARCS = {
   selene: {
     id: 'seleneMoonRemedy',
     npcId: 'selene',
+    type: 'npc',
     name: '塞琳：月井药方',
     blurb: '她用药草救人，也用沉默保存一张不能公开的月井药方。',
     steps: [
@@ -596,6 +601,7 @@ const NPC_STORY_ARCS = {
   oran: {
     id: 'oranFurnaceHeart',
     npcId: 'oran',
+    type: 'npc',
     name: '奥兰：炉心旧响',
     blurb: '奥兰不擅长温柔，但每一次修车都像在替某段旧事补上铆钉。',
     steps: [
@@ -607,6 +613,7 @@ const NPC_STORY_ARCS = {
   naya: {
     id: 'nayaVeilName',
     npcId: 'naya',
+    type: 'npc',
     name: '娜雅：面纱真名',
     blurb: '她有太多假名，直到某个追踪者喊出了不该被知道的那个。',
     steps: [
@@ -618,6 +625,7 @@ const NPC_STORY_ARCS = {
   avel: {
     id: 'avelRoseSeal',
     npcId: 'avel',
+    type: 'npc',
     name: '阿维尔：玫瑰封缄',
     blurb: '阿维尔的礼节像锁，真正的请求藏在封蜡底下。',
     steps: [
@@ -629,6 +637,7 @@ const NPC_STORY_ARCS = {
   rhea: {
     id: 'rheaDragonTrace',
     npcId: 'rhea',
+    type: 'npc',
     name: '蕾娅：龙门回声',
     blurb: '蕾娅追逐危险不是为了战利品，而是为了确认自己听见的古龙回声并非幻觉。',
     steps: [
@@ -640,6 +649,56 @@ const NPC_STORY_ARCS = {
 }
 
 const STORY_ARCS = [MAIN_STORY_ARC, ...Object.values(NPC_STORY_ARCS)]
+
+const STORY_REFLECTIONS = {
+  whiteTowerLedger: [
+    '银库里的空格像一枚钉子，把你的商号钉进白塔旧债的边缘。',
+    '潮账缺页让港口不再只是买卖地，而成了旧商队最后一次露面的证词。',
+    '蓝帐篷给出的假名说明这条债线还活着，只是换了衣服和路线。',
+    '古龙门后的欠契把利润、遗迹和追猎者绑到同一辆货车上。',
+    '白塔长桌上的立契让阴影债务变成公开商路，也让你真正进入大商会的牌局。',
+  ],
+  linaAuctionVow: [
+    '莉娜把真正的名单推给你时，也把一小段不愿明说的信任推过了桌面。',
+    '半拍沉默让你们在拍卖行里站到同一边，港口人情从此不只算钱。',
+    '最高价牌背后的名字让莉娜的关系线不再像一场竞拍，而像一次选择。',
+  ],
+  kaelSnowOath: [
+    '旧哨声让凯尔重新确认：守夜不是习惯，而是他还没放下的誓言。',
+    '风雪名单把军需商单和旧日战场缝在一起，也让他把一部分沉默交给你保管。',
+    '守到天明之后，凯尔的护卫不再只是雇佣关系，而是写进轮值表的承诺。',
+  ],
+  miraStarProof: [
+    '米拉把信任写成变量，却没有把你从公式里删掉。',
+    '缺星公式证明一条隐藏商路，也证明她开始允许误差靠近自己。',
+    '私人结论没有交给导师团，先交给了你。',
+  ],
+  seleneMoonRemedy: [
+    '塞琳交出的药包没有署名，却把月井秘密的第一道门留给了你。',
+    '月井回声让她停在水边，也让你第一次看见医者沉默背后的害怕。',
+    '那瓶温药不像奖励，更像她承认自己也需要被照看。',
+  ],
+  oranFurnaceHeart: [
+    '裂开的轮轴露出工坊暗记，奥兰的修车声里多了一段旧案。',
+    '炉前证人的话让坏掉的铁件有了名字，也让奥兰的怒意有了方向。',
+    '新铆钉敲进车架时，他终于承认有些东西不该回炉重铸。',
+  ],
+  nayaVeilName: [
+    '娜雅的反向尾随像一堂密探课：她先确认你会不会把背后交给她。',
+    '蓝砂短码越读越像试探，她等你学会追问，也学会不追问。',
+    '真名只说一次，但它比任何密报都更像一份长期契约。',
+  ],
+  avelRoseSeal: [
+    '无名请柬把阿维尔的礼节撬开一道缝，里面藏着贵族账房的旧债。',
+    '玫瑰封蜡后面的税册让他第一次把家族软肋摆上你的桌面。',
+    '无人花厅里少了一步礼节，多了一步真正的托付。',
+  ],
+  rheaDragonTrace: [
+    '蕾娅的断门拓片看似冒险邀请，其实是她把退路交到你手里。',
+    '骨灯指向侧道时，她第一次问你要不要一起赌。',
+    '古龙回声响起时，她先找你的手，再找入口。',
+  ],
+}
 
 const AUDIO_SCENES = {
   market: { name: '市集小调', root: 196, scale: [1, 1.125, 1.25, 1.5, 1.667, 1.5, 1.25, 1.125], tempo: 520, wave: 'triangle', bassEvery: 4, gain: 0.08 },
@@ -1762,7 +1821,7 @@ function parseLogEntry(entry) {
 function achievementCategory(achievement) {
   if (['firstBond', 'warmHeart', 'confession', 'firstMarriage', 'manyLoves', 'dates', 'giftGiver', 'companionRoad', 'companionMoments', 'personalQuests', 'personalArc'].includes(achievement.id)) return '人物'
   if (['fighter', 'veteran', 'rareHunter', 'extremeRoad', 'firstLandmark', 'landmarkAtlas'].includes(achievement.id)) return '冒险'
-  if (['explorer', 'deepExplorer', 'connected', 'longRun', 'streetwise', 'campPlanner', 'timekeeper', 'firstChapter', 'whiteTowerStory'].includes(achievement.id)) return '旅途'
+  if (['explorer', 'deepExplorer', 'connected', 'longRun', 'streetwise', 'campPlanner', 'timekeeper', 'firstChapter', 'storyArchivist', 'whiteTowerStory'].includes(achievement.id)) return '旅途'
   if (['factionFriend', 'alliedNetwork'].includes(achievement.id)) return '势力'
   if (['stallRegular'].includes(achievement.id)) return '交易'
   return '经营'
@@ -2131,6 +2190,91 @@ function getStoryFocus(game) {
   const step = getStoryStep(game, MAIN_STORY_ARC)
   if (!step) return `${MAIN_STORY_ARC.name}已完成`
   return describeStoryProgress(game, MAIN_STORY_ARC)
+}
+
+function getStoryReflection(arc, index, step) {
+  return STORY_REFLECTIONS[arc.id]?.[index] ?? `${step.text} ${step.effect}`
+}
+
+function getStoryJournalEntries(game) {
+  const entries = []
+  STORY_ARCS.forEach((arc) => {
+    const progress = getStoryProgress(game, arc)
+    arc.steps.slice(0, progress).forEach((step, index) => {
+      entries.push({
+        id: `${arc.id}-${index}`,
+        type: arc.type === 'main' ? '主线' : '人物',
+        arcName: arc.name,
+        title: step.title,
+        place: step.locationId ? locationsById[step.locationId]?.name : arc.type === 'npc' ? npcById[arc.npcId]?.location && locationsById[npcById[arc.npcId].location]?.name : null,
+        text: getStoryReflection(arc, index, step),
+        reward: describeStoryRewards(step),
+      })
+    })
+  })
+
+  Object.entries(game.discoveries ?? {}).forEach(([locationId, ids]) => {
+    ids.forEach((id) => {
+      const landmark = landmarksByLocation[locationId]?.find((item) => item.id === id)
+      if (!landmark) return
+      entries.push({
+        id: `landmark-${id}`,
+        type: '秘闻',
+        arcName: `${locationsById[locationId]?.name ?? '未知地点'}地图册`,
+        title: landmark.name,
+        place: locationsById[locationId]?.name,
+        text: landmark.text,
+        reward: '地点秘闻已记录',
+      })
+    })
+  })
+
+  return entries
+}
+
+function getStoryLeadCards(game) {
+  const mainStep = getStoryStep(game, MAIN_STORY_ARC)
+  const leads = []
+  if (mainStep) {
+    leads.push({
+      id: 'main-lead',
+      type: '主线',
+      title: mainStep.title,
+      arcName: MAIN_STORY_ARC.name,
+      status: getStoryRequirementStatus(game, MAIN_STORY_ARC).reason,
+      text: mainStep.need,
+    })
+  }
+
+  ;(game.knownNpcIds ?? []).forEach((npcId) => {
+    const arc = NPC_STORY_ARCS[npcId]
+    const step = arc ? getStoryStep(game, arc) : null
+    if (!arc || !step) return
+    leads.push({
+      id: `npc-lead-${npcId}`,
+      type: '人物',
+      title: step.title,
+      arcName: arc.name,
+      status: getStoryRequirementStatus(game, arc).reason,
+      text: step.need,
+    })
+  })
+
+  return leads.slice(0, 4)
+}
+
+function getStoryJournalSummary(game) {
+  const entries = getStoryJournalEntries(game)
+  const leads = getStoryLeadCards(game)
+  const completedMain = getStoryProgress(game, MAIN_STORY_ARC)
+  const completedNpc = Object.values(normalizeStories(game.stories).npc).reduce((sum, value) => sum + value, 0)
+  return {
+    entries,
+    leads,
+    completedMain,
+    completedNpc,
+    latest: entries[entries.length - 1] ?? null,
+  }
 }
 
 function describeStoryRewards(step) {
@@ -3005,6 +3149,7 @@ function App() {
   const logGroups = useMemo(() => groupLogsByDay(game.log ?? []), [game.log])
   const todayFocus = useMemo(() => getTodayFocus(game), [game])
   const timeLedger = useMemo(() => getTimeLedger(game), [game])
+  const storyJournal = useMemo(() => getStoryJournalSummary(game), [game])
   const currentDiscoveries = getDiscoveredLandmarks(game, game.location)
   const currentDiscoveryTotal = landmarksByLocation[game.location]?.length ?? 0
   const marketOfferQuote = getMarketOfferQuote(game)
@@ -4345,6 +4490,29 @@ function App() {
                 {mainStoryStep ? '推进篇章' : '篇章完成'}
               </button>
             </article>
+            <div className="story-ledger-strip">
+              <span>手札 {storyJournal.entries.length} 条</span>
+              <span>主线 {storyJournal.completedMain}/{MAIN_STORY_ARC.steps.length}</span>
+              <span>人物 {storyJournal.completedNpc} 段</span>
+            </div>
+            {storyJournal.latest && (
+              <article className="story-note-card">
+                <strong>最近手札 · {storyJournal.latest.title}</strong>
+                <span>{storyJournal.latest.text}</span>
+              </article>
+            )}
+            {storyJournal.leads.length > 0 && (
+              <div className="story-lead-list">
+                {storyJournal.leads.map((lead) => (
+                  <article key={lead.id} className="story-lead-card">
+                    <strong>{lead.type} · {lead.title}</strong>
+                    <span>{lead.arcName}</span>
+                    <small>{lead.text}</small>
+                    <small>状态：{lead.status}</small>
+                  </article>
+                ))}
+              </div>
+            )}
           </section>
 
           <section className="panel camp-panel">
@@ -4545,6 +4713,38 @@ function App() {
       </div>
 
       <div className={`lower-grid ${activeTab === 'records' ? 'is-active' : ''}`}>
+        <section className="panel story-journal-panel">
+          <PanelTitle kicker="手札" title="商路故事簿" />
+          <div className="story-journal-summary">
+            <span>
+              <strong>{storyJournal.entries.length}</strong>
+              <small>已收录条目</small>
+            </span>
+            <span>
+              <strong>{storyJournal.completedMain}</strong>
+              <small>主线篇章</small>
+            </span>
+            <span>
+              <strong>{storyJournal.completedNpc}</strong>
+              <small>人物篇章</small>
+            </span>
+          </div>
+          {storyJournal.entries.length ? (
+            <div className="story-journal-list">
+              {storyJournal.entries.slice(-8).reverse().map((entry) => (
+                <article key={entry.id} className={`story-journal-entry entry-${entry.type}`}>
+                  <small>{entry.type} · {entry.arcName}{entry.place ? ` · ${entry.place}` : ''}</small>
+                  <strong>{entry.title}</strong>
+                  <span>{entry.text}</span>
+                  <small>{entry.reward}</small>
+                </article>
+              ))}
+            </div>
+          ) : (
+            <p className="empty-note">还没有完成篇章或发现秘闻。推进白塔旧契、人物故事和地点探索后，手札会在这里整理成可回看的记录。</p>
+          )}
+        </section>
+
         <section className="panel time-ledger-panel">
           <PanelTitle kicker="行程" title="行动账本" />
           <div className="time-ledger-grid">
