@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 
 const VERSION = 1
@@ -129,6 +129,8 @@ const ACHIEVEMENTS = [
   { id: 'stallCloser', name: '摊位快手', text: '成交 8 次每日市集摊位。', test: (s) => (s.stats.marketOffersDone ?? 0) >= 8 },
   { id: 'stallRegular', name: '熟摊照面', text: '任意摊主信任达到 5。', test: (s) => Object.values(s.stallRelations ?? {}).some((rel) => (rel.trust ?? 0) >= 5) },
   { id: 'timekeeper', name: '行程账本', text: '累计记录 300 秒行动耗时。', test: (s) => (s.elapsedSeconds ?? s.stats.timeSpent ?? 0) >= 300 },
+  { id: 'firstChapter', name: '篇章开卷', text: '推进 1 次故事篇章。', test: (s) => (s.stats.storyChapters ?? 0) >= 1 },
+  { id: 'whiteTowerStory', name: '白塔旧契', text: '完成主线“白塔旧契”。', test: (s) => (s.stories?.main?.whiteTowerLedger ?? 0) >= 5 },
   { id: 'profiteer', name: '算盘响亮', text: '累计净收入达到 2000。', test: (s) => s.stats.profit >= 2000 },
   { id: 'longRun', name: '三十日商路', text: '坚持到第 30 天。', test: (s) => s.day >= 30 },
   { id: 'firstBond', name: '第一次心动', text: '结识第一位人物。', test: (s) => (s.knownNpcIds?.length ?? 0) >= 1 },
@@ -157,6 +159,7 @@ const ACHIEVEMENTS = [
   { id: 'localExpert', name: '地方通', text: '任一地点熟练度达到 4 级。', test: (s) => LOCATIONS.some((location) => getMasteryLevel(s, location.id) >= 4) },
   { id: 'pressureRelief', name: '稳住车队', text: '累计清除 20 点风险压力。', test: (s) => (s.stats.pressureCleared ?? 0) >= 20 },
   { id: 'personalQuests', name: '并肩办事', text: '完成人物共同任务 8 次。', test: (s) => (s.stats.npcQuests ?? 0) >= 8 },
+  { id: 'personalArc', name: '私人篇章', text: '完成任意人物的 3 段个人故事。', test: (s) => Object.values(s.stories?.npc ?? {}).some((value) => value >= 3) },
 ]
 
 const START_LOG = [
@@ -464,6 +467,179 @@ const CAMP_ACTIONS = [
   { id: 'watch', name: '轮岗守夜', route: 'combat', cost: 20, text: '加派守夜和巡车人手，明显压低风险压力。' },
   { id: 'campfire', name: '篝火谈心', route: 'social', cost: 16, text: '把晚餐做得体面些，可能加深一段已结识的人物关系。' },
 ]
+
+const MAIN_STORY_ARC = {
+  id: 'whiteTowerLedger',
+  name: '白塔旧契',
+  type: 'main',
+  blurb: '一批被抹去署名的旧商契，把白塔王都、港口拍卖行、沙海密探和古龙遗迹串成同一条债线。',
+  steps: [
+    {
+      title: '旧银库的空格',
+      locationId: 'capital',
+      need: '前往白塔王都，并准备 20 金币打点银库书记。',
+      text: '你在白塔旧银库看见一排被刮去商号印记的契约。书记收下打点后低声提醒：这些空格不是旧账，而是有人仍在催收。',
+      effect: '白塔商会替你压下一张小罚单，旧契线索被写入商会账本。',
+      goldCost: 20,
+      rewards: [{ type: 'gold', amount: 85 }],
+      factionId: 'whiteGuild',
+      factionGain: 1,
+      pressure: -1,
+      guildXp: 24,
+      route: 'social',
+    },
+    {
+      title: '潮账里的缺页',
+      locationId: 'port',
+      minDay: 2,
+      need: '第 2 天后前往市集港，追查旧契货箱的海运缺页。',
+      text: '港口拍卖行的旧潮账缺了一页，莉娜的同行认出箱号属于一支早已失踪的白塔商队。缺页背面只剩半枚潮蜡印。',
+      effect: '你拿到潮汐寄货副本，港口拍卖行也记住了你的谨慎。',
+      rewards: [{ type: 'good', goodId: 'pearl', amount: 1 }, { type: 'gold', amount: 60 }],
+      factionId: 'harborAuction',
+      factionGain: 1,
+      guildXp: 28,
+      route: 'trade',
+    },
+    {
+      title: '蓝帐篷的假名',
+      locationId: 'oasis',
+      minReputation: 3,
+      need: '声望达到 3 后前往沙海绿洲，让密探核对潮蜡印。',
+      text: '蓝帐篷后的密探把潮蜡印浸进热砂，浮出的却是一个假名：曾经担保旧契的人，正在用新的商路身份活动。',
+      effect: '沙海密探网替你划掉一条危险路线，并交出一张旧星图残页。',
+      rewards: [{ type: 'good', goodId: 'map', amount: 1 }],
+      factionId: 'sandVeil',
+      factionGain: 1,
+      pressure: -2,
+      guildXp: 34,
+      route: 'explore',
+    },
+    {
+      title: '古龙门后的欠契',
+      locationId: 'ruins',
+      minGuildLevel: 2,
+      need: '商会等级达到 2 后前往古龙遗迹，核对旧星图残页。',
+      text: '古龙断门后的石匣里压着一份欠契副本，债主不是人名，而是一枚失效的白塔商印。石匣开启时，遗迹尘埃像旧账一样涌出。',
+      effect: '你带回遗物和关键证据，但车队也被遗迹猎人盯上。',
+      rewards: [{ type: 'good', goodId: 'relic', amount: 1 }, { type: 'good', goodId: 'dragonbone', amount: 1 }],
+      factionId: 'dragonLeague',
+      factionGain: 1,
+      pressure: 1,
+      guildXp: 42,
+      route: 'explore',
+    },
+    {
+      title: '白塔商号立契',
+      locationId: 'capital',
+      minRouteContractsDone: 1,
+      minReputation: 6,
+      need: '完成 1 张跨城商单、声望达到 6 后回到白塔王都。',
+      text: '你把潮账、假名和古龙欠契摆上白塔长桌。旧担保人终于承认债线，愿意用公开商约换取你的沉默与合作。',
+      effect: '你的商号得到正式立契，白塔旧债从阴影变成一条能赚钱的公开商路。',
+      rewards: [{ type: 'gold', amount: 420 }],
+      reputation: 2,
+      factionId: 'whiteGuild',
+      factionGain: 2,
+      pressure: -3,
+      guildXp: 70,
+      route: 'trade',
+    },
+  ],
+}
+
+const NPC_STORY_ARCS = {
+  lina: {
+    id: 'linaAuctionVow',
+    npcId: 'lina',
+    name: '莉娜：落槌之前',
+    blurb: '她习惯把真心藏在拍卖节奏里，直到一份被调包的拍品把你们推到同一张暗桌前。',
+    steps: [
+      { title: '暗拍名单', minAffection: 15, need: '好感 15，在人物页推进。', text: '莉娜让你旁听一场不公开的小拍。她没有解释为什么信你，只在落槌前把真正的名单推到你手边。', effect: '你学会辨认拍卖行的暗号，获得一笔介绍费。', rewards: [{ type: 'gold', amount: 90 }], affection: 8 },
+      { title: '半拍沉默', minAffection: 45, need: '好感 45。', text: '有人试图抬走一件旧契相关拍品。莉娜故意慢了半拍，让你有时间截下对方的保证金。', effect: '港口拍卖行欠你们一次人情。', factionId: 'harborAuction', factionGain: 1, rewards: [{ type: 'good', goodId: 'pearl', amount: 1 }], affection: 10 },
+      { title: '只给你的最高价', minAffection: 75, need: '好感 75。', text: '收场后她把最高价牌翻过来，背面写着你的名字。她说这不是交易，只是不想再把你放进竞价名单。', effect: '莉娜的信任成为稳定的商路加成。', reputation: 1, rewards: [{ type: 'gold', amount: 160 }], affection: 12 },
+    ],
+  },
+  kael: {
+    id: 'kaelSnowOath',
+    npcId: 'kael',
+    name: '凯尔：雪线誓言',
+    blurb: '凯尔很少解释旧伤，但北境风雪总会把沉默的人推回誓言前。',
+    steps: [
+      { title: '旧哨声', minAffection: 15, need: '好感 15。', text: '凯尔在夜里听见旧哨声，立刻让车队换营。天亮后你们发现原来的营地边有伏兵踩过的新雪。', effect: '车队压力下降，他也愿意多说一句过去。', pressure: -2, affection: 8 },
+      { title: '风雪名单', minAffection: 45, need: '好感 45。', text: '他把一张阵亡名单交给你保管。名单背后还有一个活着的叛徒名字，正借军需商单洗白。', effect: '北境军需处开始配合你的核查。', factionId: 'northQuarter', factionGain: 1, reputation: 1, affection: 10 },
+      { title: '守到天明', minAffection: 75, need: '好感 75。', text: '凯尔终于承认，他害怕的不是风雪，是再一次没守住重要的人。你陪他站到天明，哨塔灯火没有熄。', effect: '他把护卫誓言写进你的商会轮值表。', pressure: -3, rewards: [{ type: 'gold', amount: 120 }], affection: 12 },
+    ],
+  },
+  mira: {
+    id: 'miraStarProof',
+    npcId: 'mira',
+    name: '米拉：星图旁注',
+    blurb: '米拉相信公式，却发现最关键的误差总和你有关。',
+    steps: [
+      { title: '误差样本', minAffection: 15, need: '好感 15。', text: '米拉请你带来一组真实行情，她在页边写下“变量：信任”，然后假装没看见你读到了。', effect: '明日风向被重新整理。', rumors: true, affection: 8 },
+      { title: '缺星公式', minAffection: 45, need: '好感 45。', text: '旧星图少了一颗星。米拉把你的路程账本摊开，证明那颗星其实是一条被隐藏的商路。', effect: '导师团愿意资助后续核验。', factionId: 'skyFaculty', factionGain: 1, rewards: [{ type: 'good', goodId: 'crystal', amount: 1 }], affection: 10 },
+      { title: '私人结论', minAffection: 75, need: '好感 75。', text: '她把最终公式盖住，只给你看最后一行：若同行者为你，风险可接受。', effect: '你们得到一份稳定的星图残页。', rewards: [{ type: 'good', goodId: 'map', amount: 1 }, { type: 'good', goodId: 'ink', amount: 2 }], affection: 12 },
+    ],
+  },
+  selene: {
+    id: 'seleneMoonRemedy',
+    npcId: 'selene',
+    name: '塞琳：月井药方',
+    blurb: '她用药草救人，也用沉默保存一张不能公开的月井药方。',
+    steps: [
+      { title: '未署名药包', minAffection: 15, need: '好感 15。', text: '塞琳把一个未署名药包交给你，说若路上有人问起，就说这是普通银叶。香气却像月井深处。', effect: '车队恢复生命并获得药草。', hp: 24, rewards: [{ type: 'good', goodId: 'herb', amount: 2 }], affection: 8 },
+      { title: '月井回声', minAffection: 45, need: '好感 45。', text: '你陪她回到月井，听见水下有人念旧药方。塞琳握住你的手，终于没有独自走近井边。', effect: '药师会承认你是可信的送药人。', factionId: 'moonCircle', factionGain: 1, pressure: -2, affection: 10 },
+      { title: '留给你的温药', minAffection: 75, need: '好感 75。', text: '她把最难保存的一瓶温药放进你怀里，低声说这次不是给伤口，是给赶路太久的人。', effect: '你得到月露样品，车队状态明显安定。', hp: 36, pressure: -3, rewards: [{ type: 'good', goodId: 'moon', amount: 1 }], affection: 12 },
+    ],
+  },
+  oran: {
+    id: 'oranFurnaceHeart',
+    npcId: 'oran',
+    name: '奥兰：炉心旧响',
+    blurb: '奥兰不擅长温柔，但每一次修车都像在替某段旧事补上铆钉。',
+    steps: [
+      { title: '裂开的轮轴', minAffection: 15, need: '好感 15。', text: '奥兰嫌你不懂保养，却连夜替你换掉将断的轮轴。旧轮轴里藏着一枚工坊暗记。', effect: '货车容量略有提升。', capacity: 1, affection: 8 },
+      { title: '炉前证人', minAffection: 45, need: '好感 45。', text: '他带你去见一位老工匠，证明有人曾用劣铁害死一整支商队。炉火照得他眼神发硬。', effect: '工匠联盟愿意把账算在你这边。', factionId: 'emberUnion', factionGain: 1, rewards: [{ type: 'good', goodId: 'gear', amount: 2 }], affection: 10 },
+      { title: '不再回炉', minAffection: 75, need: '好感 75。', text: '奥兰把一枚新铆钉敲进你的车架，说坏掉的东西未必都该回炉，有些值得慢慢修。', effect: '货车更稳，工坊也送来一笔材料折价。', capacity: 1, rewards: [{ type: 'gold', amount: 130 }], affection: 12 },
+    ],
+  },
+  naya: {
+    id: 'nayaVeilName',
+    npcId: 'naya',
+    name: '娜雅：面纱真名',
+    blurb: '她有太多假名，直到某个追踪者喊出了不该被知道的那个。',
+    steps: [
+      { title: '反向尾随', minAffection: 15, need: '好感 15。', text: '娜雅让你假装被跟踪，自己绕到尾随者身后。她笑着说，信任就是把后背借给会还的人。', effect: '风险压力下降，沙路情报更清楚。', pressure: -2, affection: 8 },
+      { title: '蓝砂密码', minAffection: 45, need: '好感 45。', text: '她教你读蓝砂上的短码，每个转折都像在试探你会不会追问她的真名。', effect: '沙海密探网给出一份星图残页。', factionId: 'sandVeil', factionGain: 1, rewards: [{ type: 'good', goodId: 'map', amount: 1 }], affection: 10 },
+      { title: '只告诉你一次', minAffection: 75, need: '好感 75。', text: '夜市灯火被风吹低时，娜雅把真名说给你听。她只说一次，但你知道这比任何密报都重。', effect: '她替你抹掉一笔危险尾账。', reputation: 1, pressure: -3, affection: 12 },
+    ],
+  },
+  avel: {
+    id: 'avelRoseSeal',
+    npcId: 'avel',
+    name: '阿维尔：玫瑰封缄',
+    blurb: '阿维尔的礼节像锁，真正的请求藏在封蜡底下。',
+    steps: [
+      { title: '无名请柬', minAffection: 15, need: '好感 15。', text: '阿维尔递来一封没有署名的请柬，请你以商人身份入席。宴会上的每句寒暄都指向同一笔旧债。', effect: '你获得贵族账房的感谢金。', rewards: [{ type: 'gold', amount: 100 }], affection: 8 },
+      { title: '玫瑰税册', minAffection: 45, need: '好感 45。', text: '他让你看见一页被玫瑰封缄遮住的税册。若不是信你，他绝不会把家族软肋放上桌。', effect: '白塔商会给你的商号更多体面。', factionId: 'whiteGuild', factionGain: 1, reputation: 1, affection: 10 },
+      { title: '越礼一步', minAffection: 75, need: '好感 75。', text: '阿维尔在无人花厅里放下全部礼节，说有些契约不适合盖公章，只适合交给你保管。', effect: '贵族渠道替你补上一笔稳定资金。', rewards: [{ type: 'gold', amount: 180 }], affection: 12 },
+    ],
+  },
+  rhea: {
+    id: 'rheaDragonTrace',
+    npcId: 'rhea',
+    name: '蕾娅：龙门回声',
+    blurb: '蕾娅追逐危险不是为了战利品，而是为了确认自己听见的古龙回声并非幻觉。',
+    steps: [
+      { title: '断门拓片', minAffection: 15, need: '好感 15。', text: '蕾娅把一张断门拓片塞给你，说如果她没回来，就按图去找真正的入口。她当然回来了，还笑你担心太早。', effect: '你获得一件遗迹样品。', rewards: [{ type: 'good', goodId: 'relic', amount: 1 }], affection: 8 },
+      { title: '骨灯方向', minAffection: 45, need: '好感 45。', text: '骨灯在你们之间亮起，指向一条猎盟不敢公开的侧道。蕾娅第一次问你要不要一起赌。', effect: '遗迹猎盟承认你的胆量。', factionId: 'dragonLeague', factionGain: 1, rewards: [{ type: 'good', goodId: 'dragonbone', amount: 1 }], affection: 10 },
+      { title: '回声同伴', minAffection: 75, need: '好感 75。', text: '古龙回声在深处震动时，蕾娅没有往前冲，而是先回头找你的手。她说同伴比入口更难得。', effect: '你们带回稀有战利品，也带回共同的路线。', rewards: [{ type: 'equipment', itemId: 'ruinCharm' }], pressure: -1, affection: 12 },
+    ],
+  },
+}
+
+const STORY_ARCS = [MAIN_STORY_ARC, ...Object.values(NPC_STORY_ARCS)]
 
 const ROUTE_CONDITIONS = [
   { id: 'clear', name: '晴稳商路', weight: 18, travelCost: 0.92, exploreCost: 0.96, danger: -0.03, pressure: -1, text: '驿站补给充足，车辙干爽，适合赶路和压低消耗。' },
@@ -970,6 +1146,23 @@ function normalizeStats(baseStats, stats = {}) {
     pressureCleared: stats.pressureCleared ?? 0,
     npcQuests: stats.npcQuests ?? 0,
     landmarksFound: stats.landmarksFound ?? 0,
+    storyChapters: stats.storyChapters ?? 0,
+    npcStoryChapters: stats.npcStoryChapters ?? 0,
+  }
+}
+
+function createInitialStories() {
+  return {
+    main: Object.fromEntries(STORY_ARCS.filter((arc) => arc.type === 'main').map((arc) => [arc.id, 0])),
+    npc: Object.fromEntries(STORY_ARCS.filter((arc) => arc.type === 'npc').map((arc) => [arc.npcId, 0])),
+  }
+}
+
+function normalizeStories(stories = {}) {
+  const base = createInitialStories()
+  return {
+    main: { ...base.main, ...(stories.main ?? {}) },
+    npc: { ...base.npc, ...(stories.npc ?? {}) },
   }
 }
 
@@ -1301,9 +1494,14 @@ function getActionSeconds(game, kind, context = {}) {
   }
   if (kind === 'commission') {
     if (context.type === 'survey') return clamp(5 + location.risk, 0, 10)
-    if (context.type === 'bounty') return 0
+    if (context.type === 'bounty') return clamp(3 + location.risk, 3, 8)
     return clamp(3 + (location.risk >= 4 ? 2 : location.risk >= 2 ? 1 : 0), 3, 5)
   }
+  if (kind === 'story') return clamp(4 + location.risk + (context.final ? 2 : 0), 4, 10)
+  if (kind === 'equipmentBuy') return clamp(2 + Math.ceil((context.price ?? 0) / 700), 2, 5)
+  if (kind === 'equipmentSell') return 2
+  if (kind === 'equip') return 1
+  if (kind === 'localLead') return clamp(4 + location.risk + (context.type === 'landmark' ? 1 : 0), 4, 9)
   if (kind === 'routeAccept') return 1
   if (kind === 'routeComplete') return clamp(4 + Math.ceil(location.risk / 2), 4, 7)
   if (kind === 'routeAbandon') return 2
@@ -1316,6 +1514,60 @@ function getActionSeconds(game, kind, context = {}) {
     return rand(2, 4)
   }
   return 0
+}
+
+const ACTION_WAIT_MESSAGES = {
+  trade: ['清点货物和账页。', '核对报价，压住最后一枚金币。', '封箱装车，确认货舱余量。'],
+  travel: ['套好车具，查明下一段路标。', '车队穿过尘土和哨卡。', '斥候在前方确认落脚点。'],
+  explore: ['备好灯油、绳索和地图。', '沿着线索搜查街巷与旧路。', '避开危险处，记录能带走的消息。'],
+  social: ['整理措辞和礼物。', '寒暄过后，等待对方真正回应。', '把话说得更近，也更谨慎。'],
+  combat: ['拉开距离，稳住货车。', '寻找破绽，护住要害。', '车队屏息等待下一次交锋。'],
+  camp: ['支起篝火，分派今晚的活。', '清点车队伤损和补给。', '夜色压下来，营地逐渐安静。'],
+  equipment: ['试一试手感和尺寸。', '核对工坊印记与磨损。', '把装备收进车队账册。'],
+  rest: ['卸下车具，让人和马都喘口气。', '烧水、换药、重新整理货箱。', '把风险留在门外一会儿。'],
+  route: ['摊开商单，核对目的地。', '重新估算期限和路费。', '把契约印记压进账本。'],
+  story: ['翻开旧账与私信。', '把线索、名字和地点重新排在一起。', '这段商路正在变成真正的故事。'],
+}
+
+function waitKindFromAction(current, next) {
+  const entry = String(next.log?.[0] ?? '')
+  if (next.combat || entry.includes('战斗')) return 'combat'
+  if (next.day > current.day && next.location !== current.location) return 'travel'
+  if (next.day > current.day) return 'explore'
+  if (entry.includes('交易') || entry.includes('摊位')) return 'trade'
+  if (entry.includes('商单')) return 'route'
+  if (entry.includes('篇章')) return 'story'
+  if (entry.includes('委托')) return next.combat ? 'combat' : 'route'
+  if (entry.includes('夜营')) return 'camp'
+  if (entry.includes('休整')) return 'rest'
+  if (entry.includes('战斗')) return 'combat'
+  if (entry.includes('人物') || entry.includes('好感') || entry.includes('表白') || entry.includes('结婚')) return 'social'
+  if (entry.includes('装备') || entry.includes('装上') || entry.includes('出售')) return 'equipment'
+  if (entry.includes('线索') || entry.includes('秘闻')) return 'explore'
+  return 'trade'
+}
+
+function getPendingActionDetails(current, next) {
+  const kind = waitKindFromAction(current, next)
+  const entry = String(next.log?.[0] ?? '')
+  const parsed = parseLogEntry(entry.replace(/^第\s*\d+\s*天：/, ''))
+  const label = parsed.tag && parsed.tag !== '记录' ? `${parsed.tag}进行中` : '行动进行中'
+  return {
+    kind,
+    label,
+    messages: ACTION_WAIT_MESSAGES[kind] ?? ACTION_WAIT_MESSAGES.trade,
+  }
+}
+
+function describeDayToast(game) {
+  const location = locationsById[game.location] ?? LOCATIONS[0]
+  const scene = game.localScene ? describeLocalScene(game.localScene) : '本地市面暂时平稳。'
+  const route = describeRouteCondition(game.routeCondition)
+  const pressure = game.riskPressure ?? 0
+  const pressureText = pressure >= 18 ? '风险压力逼近危险线' : pressure >= 10 ? '车队压力偏高' : '车队状态平稳'
+  const offer = game.marketOffer ? '今日市集还有摊位可谈。' : '今日摊位暂时散场。'
+  const commission = (game.commissions ?? []).length ? `本地有 ${(game.commissions ?? []).length} 个委托可看。` : '本地委托已经清空。'
+  return `${location.name}。${route} ${scene} ${pressureText}，${offer}${commission}`
 }
 
 function advanceDay(game, nextDay, locationId = game.location) {
@@ -1366,9 +1618,9 @@ function parseLogEntry(entry) {
 }
 
 function achievementCategory(achievement) {
-  if (['firstBond', 'warmHeart', 'confession', 'firstMarriage', 'manyLoves', 'dates', 'giftGiver', 'companionRoad', 'companionMoments', 'personalQuests'].includes(achievement.id)) return '人物'
+  if (['firstBond', 'warmHeart', 'confession', 'firstMarriage', 'manyLoves', 'dates', 'giftGiver', 'companionRoad', 'companionMoments', 'personalQuests', 'personalArc'].includes(achievement.id)) return '人物'
   if (['fighter', 'veteran', 'rareHunter', 'extremeRoad', 'firstLandmark', 'landmarkAtlas'].includes(achievement.id)) return '冒险'
-  if (['explorer', 'deepExplorer', 'connected', 'longRun', 'streetwise', 'campPlanner', 'timekeeper'].includes(achievement.id)) return '旅途'
+  if (['explorer', 'deepExplorer', 'connected', 'longRun', 'streetwise', 'campPlanner', 'timekeeper', 'firstChapter', 'whiteTowerStory'].includes(achievement.id)) return '旅途'
   if (['factionFriend', 'alliedNetwork'].includes(achievement.id)) return '势力'
   if (['stallRegular'].includes(achievement.id)) return '交易'
   return '经营'
@@ -1539,6 +1791,7 @@ function createInitialGame() {
     activeRouteContract: null,
     factions: createInitialFactions(),
     stallRelations: createEmptyStallRelations(),
+    stories: createInitialStories(),
     guild: createInitialGuild(),
     locationMastery: createInitialLocationMastery(),
     discoveries: createInitialDiscoveries(),
@@ -1577,6 +1830,8 @@ function createInitialGame() {
       companionMoments: 0,
       marketOffersDone: 0,
       timeSpent: 0,
+      storyChapters: 0,
+      npcStoryChapters: 0,
     },
     achievements: [],
     log: [
@@ -1686,10 +1941,119 @@ function getTodayFocus(game) {
     localScene: game.localScene?.name ?? '平稳市面',
     localLead: game.localLead ? `${game.localLead.title} · ${game.localLead.cost} 金币` : '暂无线索',
     marketOffer: game.marketOffer ? `${offerHolder?.name ?? '临时摊主'} · ${offerTier?.name ?? '新照面'} · ${goodsById[game.marketOffer.goodId]?.name ?? '本地货'}` : '摊位已散',
+    story: getStoryFocus(game),
     commission: commission ? `${commissionLabels[commission.type]}：${commission.text}` : '今日暂无委托',
     contract: getRouteContractFocus(game),
     mastery: `本地熟练度 ${getMasteryLevel(game, game.location)} 级 · ${getFactionFavor(game).tier?.name ?? '普通往来'}`,
   }
+}
+
+function getStoryProgress(game, arc) {
+  const stories = normalizeStories(game.stories)
+  return arc.type === 'npc' ? (stories.npc[arc.npcId] ?? 0) : (stories.main[arc.id] ?? 0)
+}
+
+function getStoryStep(game, arc) {
+  return arc.steps[getStoryProgress(game, arc)] ?? null
+}
+
+function getStoryRequirementStatus(game, arc) {
+  const step = getStoryStep(game, arc)
+  if (!step) return { ok: false, done: true, reason: '已完成' }
+  if (step.locationId && game.location !== step.locationId) return { ok: false, reason: `前往${locationsById[step.locationId]?.name ?? '指定地点'}` }
+  if ((step.minDay ?? 0) > game.day) return { ok: false, reason: `等待到第 ${step.minDay} 天` }
+  if ((step.minReputation ?? 0) > game.reputation) return { ok: false, reason: `声望达到 ${step.minReputation}` }
+  if ((step.minGuildLevel ?? 0) > (game.guild?.level ?? 1)) return { ok: false, reason: `商会等级达到 ${step.minGuildLevel}` }
+  if ((step.minRouteContractsDone ?? 0) > (game.stats?.routeContractsDone ?? 0)) return { ok: false, reason: `完成 ${step.minRouteContractsDone} 张跨城商单` }
+  if ((step.goldCost ?? 0) > game.gold) return { ok: false, reason: `准备 ${step.goldCost} 金币` }
+  if (arc.type === 'npc') {
+    const npc = npcById[arc.npcId]
+    const rel = game.relationships?.[arc.npcId] ?? createEmptyRelationships()[arc.npcId]
+    if (!rel.met) return { ok: false, reason: `先结识${npc?.name ?? '这位人物'}` }
+    if ((rel.lastInteractionDay ?? 0) === game.day) return { ok: false, reason: '今日已互动' }
+    if ((step.minAffection ?? 0) > rel.affection) return { ok: false, reason: `好感达到 ${step.minAffection}` }
+  }
+  return { ok: true, reason: '可推进' }
+}
+
+function describeStoryProgress(game, arc) {
+  const progress = getStoryProgress(game, arc)
+  const total = arc.steps.length
+  const step = getStoryStep(game, arc)
+  if (!step) return `${arc.name} · 已完成 ${total}/${total}`
+  const status = getStoryRequirementStatus(game, arc)
+  return `${arc.name} · ${progress}/${total} · ${step.title} · ${status.reason}`
+}
+
+function getStoryFocus(game) {
+  const step = getStoryStep(game, MAIN_STORY_ARC)
+  if (!step) return `${MAIN_STORY_ARC.name}已完成`
+  return describeStoryProgress(game, MAIN_STORY_ARC)
+}
+
+function describeStoryRewards(step) {
+  const parts = []
+  if (step.goldCost) parts.push(`花费 ${step.goldCost} 金币`)
+  if (step.reputation) parts.push(`声望 +${step.reputation}`)
+  if (step.affection) parts.push(`好感 +${step.affection}`)
+  if (step.hp) parts.push(`生命 +${step.hp}`)
+  if (step.capacity) parts.push(`货舱 +${step.capacity}`)
+  if (step.pressure) parts.push(`风险压力 ${step.pressure > 0 ? '+' : ''}${step.pressure}`)
+  if (step.factionId && step.factionGain) parts.push(`${FACTIONS.find((faction) => faction.id === step.factionId)?.name ?? '势力'}好感 +${step.factionGain}`)
+  if (step.rewards?.length) parts.push(`获得 ${describeRewards(step.rewards)}`)
+  return parts.length ? parts.join('，') : '记录推进'
+}
+
+function advanceStoryChapter(game, arc, seconds) {
+  const progress = getStoryProgress(game, arc)
+  const step = arc.steps[progress]
+  if (!step) return addTaggedLog(game, '篇章', `${arc.name}已经完成。`)
+  const stories = normalizeStories(game.stories)
+  let next = {
+    ...game,
+    stories: arc.type === 'npc'
+      ? { ...stories, npc: { ...stories.npc, [arc.npcId]: progress + 1 } }
+      : { ...stories, main: { ...stories.main, [arc.id]: progress + 1 } },
+    gold: game.gold - (step.goldCost ?? 0),
+    reputation: game.reputation + (step.reputation ?? 0),
+    hp: game.hp + (step.hp ?? 0),
+    baseCapacity: game.baseCapacity + (step.capacity ?? 0),
+    riskPressure: clamp((game.riskPressure ?? 0) + (step.pressure ?? 0), 0, 24),
+    stats: {
+      ...game.stats,
+      storyChapters: (game.stats.storyChapters ?? 0) + 1,
+      npcStoryChapters: (game.stats.npcStoryChapters ?? 0) + (arc.type === 'npc' ? 1 : 0),
+      pressureCleared: (game.stats.pressureCleared ?? 0) + ((step.pressure ?? 0) < 0 ? Math.abs(step.pressure) : 0),
+      factionGain: (game.stats.factionGain ?? 0) + (step.factionGain ?? 0),
+    },
+  }
+  if (step.rewards?.length) next = applyRewards(next, step.rewards)
+  if (step.factionId && step.factionGain) {
+    next = {
+      ...next,
+      factions: { ...(next.factions ?? createInitialFactions()), [step.factionId]: (next.factions?.[step.factionId] ?? 0) + step.factionGain },
+    }
+  }
+  if (step.rumors) next = { ...next, rumors: createRumors(next.day, getEquipmentPassives(next).rumorBonus) }
+  if (arc.type === 'npc') {
+    next = updateRelationship(next, arc.npcId, (rel) => {
+      const affection = clamp(rel.affection + (step.affection ?? 0), 0, 100)
+      return {
+        ...rel,
+        affection,
+        interactions: rel.interactions + 1,
+        lastInteractionDay: game.day,
+        stage: relationStage({ ...rel, affection }),
+      }
+    })
+  }
+  const route = step.route ?? (arc.type === 'npc' ? 'social' : 'explore')
+  next = awardGuild(addLocationMastery(next, game.location, route, 1), route, step.guildXp ?? (arc.type === 'npc' ? 22 : 30))
+  return addTaggedLog(
+    spendTime(next, seconds),
+    '篇章',
+    withActionTime(`${arc.name} · ${step.title}：${step.text} ${step.effect} ${describeStoryRewards(step)}。`, seconds),
+  )
 }
 
 function getTimeLedger(game) {
@@ -1706,6 +2070,7 @@ function getTimeLedger(game) {
     game.stats?.routeContractsDone ?? 0,
     game.stats?.localLeadsFollowed ?? 0,
     game.stats?.battlesWon ?? 0,
+    game.stats?.storyChapters ?? 0,
   ].reduce((sum, value) => sum + value, 0)
   const average = elapsed ? Math.round(elapsed / days) : 0
   const pace = elapsed <= 0 ? '尚未开账'
@@ -2419,6 +2784,7 @@ function encodeSave(game) {
     activeRouteContract: game.activeRouteContract,
     factions: game.factions,
     stallRelations: game.stallRelations,
+    stories: game.stories,
     guild: game.guild,
     locationMastery: game.locationMastery,
     discoveries: game.discoveries,
@@ -2460,6 +2826,7 @@ function decodeSave(text) {
     activeRouteContract: payload.activeRouteContract ?? null,
     factions,
     stallRelations: normalizeStallRelations(payload.stallRelations),
+    stories: normalizeStories(payload.stories),
     guild: normalizeGuild(payload.guild),
     locationMastery: normalizeLocationMastery(payload.locationMastery),
     discoveries: normalizeDiscoveries(payload.discoveries),
@@ -2482,10 +2849,13 @@ function App() {
   const [saveError, setSaveError] = useState('')
   const [selectedNpcId, setSelectedNpcId] = useState(null)
   const [activeTab, setActiveTab] = useState('trade')
+  const [pendingAction, setPendingAction] = useState(null)
+  const [dayToast, setDayToast] = useState(null)
+  const timersRef = useRef({ actionTimeout: null, actionInterval: null, dayToast: null })
   const totals = useMemo(() => getTotals(game), [game])
   const cargoUsed = useMemo(() => getCargoUsed(game), [game])
   const currentLocation = locationsById[game.location]
-  const canAct = !game.combat && !game.gameOver
+  const canAct = !pendingAction && !game.combat && !game.gameOver
   const latestEvent = game.log.find((entry) => !String(entry).includes('成就解锁：')) ?? game.log[0]
   const logGroups = useMemo(() => groupLogsByDay(game.log ?? []), [game.log])
   const todayFocus = useMemo(() => getTodayFocus(game), [game])
@@ -2502,6 +2872,11 @@ function App() {
   const activeNpcInteractedToday = Boolean(activeRel && (activeRel.lastInteractionDay ?? 0) === game.day)
   const activeAssist = getAssist(game)
   const activeAssistNpc = activeAssist ? npcById[activeAssist.npcId] : null
+  const mainStoryStep = getStoryStep(game, MAIN_STORY_ARC)
+  const mainStoryStatus = getStoryRequirementStatus(game, MAIN_STORY_ARC)
+  const activeNpcStory = activeNpc ? NPC_STORY_ARCS[activeNpc.id] : null
+  const activeNpcStoryStep = activeNpcStory ? getStoryStep(game, activeNpcStory) : null
+  const activeNpcStoryStatus = activeNpcStory ? getStoryRequirementStatus(game, activeNpcStory) : null
   const tabs = [
     ['trade', '跑商'],
     ['adventure', '冒险'],
@@ -2511,8 +2886,70 @@ function App() {
     ['records', '记录'],
   ]
 
+  useEffect(() => () => {
+    if (timersRef.current.actionTimeout) window.clearTimeout(timersRef.current.actionTimeout)
+    if (timersRef.current.actionInterval) window.clearInterval(timersRef.current.actionInterval)
+    if (timersRef.current.dayToast) window.clearTimeout(timersRef.current.dayToast)
+  }, [])
+
+  const showDayToast = (nextGame) => {
+    if (timersRef.current.dayToast) window.clearTimeout(timersRef.current.dayToast)
+    setDayToast({ day: nextGame.day, text: describeDayToast(nextGame) })
+    timersRef.current.dayToast = window.setTimeout(() => setDayToast(null), 5600)
+  }
+
+  const startPendingAction = (current, next, seconds) => {
+    const safeSeconds = clamp(Math.round(seconds || 0), 0, 10)
+    if (!safeSeconds) {
+      setGame(next)
+      if (next.day > current.day) showDayToast(next)
+      return
+    }
+    if (timersRef.current.actionTimeout) window.clearTimeout(timersRef.current.actionTimeout)
+    if (timersRef.current.actionInterval) window.clearInterval(timersRef.current.actionInterval)
+    const details = getPendingActionDetails(current, next)
+    const durationMs = safeSeconds * 1000
+    let elapsedMs = 0
+    setPendingAction({
+      ...details,
+      seconds: safeSeconds,
+      remaining: safeSeconds,
+      messageIndex: 0,
+      progress: 0,
+    })
+    timersRef.current.actionInterval = window.setInterval(() => {
+      elapsedMs = Math.min(durationMs, elapsedMs + 250)
+      const remaining = Math.max(0, Math.ceil((durationMs - elapsedMs) / 1000))
+      setPendingAction((action) => {
+        if (!action) return action
+        return {
+          ...action,
+          remaining,
+          messageIndex: Math.floor(elapsedMs / 1500) % action.messages.length,
+          progress: clamp(Math.round((elapsedMs / durationMs) * 100), 0, 100),
+        }
+      })
+    }, 250)
+    timersRef.current.actionTimeout = window.setTimeout(() => {
+      if (timersRef.current.actionInterval) window.clearInterval(timersRef.current.actionInterval)
+      timersRef.current.actionInterval = null
+      timersRef.current.actionTimeout = null
+      setPendingAction(null)
+      setGame(next)
+      if (next.day > current.day) showDayToast(next)
+    }, durationMs)
+  }
+
   const commit = (updater) => {
-    setGame((current) => finish(typeof updater === 'function' ? updater(current) : updater))
+    const current = game
+    const next = finish(typeof updater === 'function' ? updater(current) : updater)
+    const elapsedDelta = (next.elapsedSeconds ?? 0) - (current.elapsedSeconds ?? 0)
+    if (elapsedDelta > 0) {
+      startPendingAction(current, next, elapsedDelta)
+      return
+    }
+    setGame(next)
+    if (next.day > current.day) showDayToast(next)
   }
 
   const buyGood = (goodId, amount = 1) => {
@@ -2727,9 +3164,10 @@ function App() {
       const item = equipmentById[itemId]
       if (!item || item.source !== 'shop') return addLog(current, '这件装备不在工坊出售。')
       if (current.gold < item.price) return addLog(current, `金币不足，无法购买${item.name}。`)
+      const seconds = getActionSeconds(current, 'equipmentBuy', { price: item.price })
       return addLog(
-        { ...current, gold: current.gold - item.price, equipmentOwned: [...(current.equipmentOwned ?? []), createEquipmentInstance(itemId)] },
-        `购买装备：${item.name}。`,
+        spendTime({ ...current, gold: current.gold - item.price, equipmentOwned: [...(current.equipmentOwned ?? []), createEquipmentInstance(itemId)] }, seconds),
+        withActionTime(`购买装备：${item.name}。`, seconds),
       )
     })
   }
@@ -2740,7 +3178,8 @@ function App() {
       const instance = (current.equipmentOwned ?? []).find((owned) => owned.uid === uid)
       const item = getEquipmentItem(instance)
       if (!item) return current
-      return addLog({ ...current, equipped: { ...current.equipped, [item.slot]: uid } }, `已装备${item.name}。`)
+      const seconds = getActionSeconds(current, 'equip')
+      return addLog(spendTime({ ...current, equipped: { ...current.equipped, [item.slot]: uid } }, seconds), withActionTime(`已装备${item.name}。`, seconds))
     })
   }
 
@@ -2752,13 +3191,14 @@ function App() {
       if (!item) return current
       if (Object.values(current.equipped).includes(uid)) return addLog(current, `请先换下${item.name}再出售。`)
       const revenue = getEquipmentSellPrice(current, item)
+      const seconds = getActionSeconds(current, 'equipmentSell')
       return addLog(
-        {
+        spendTime({
           ...current,
           gold: current.gold + revenue,
           equipmentOwned: (current.equipmentOwned ?? []).filter((owned) => owned.uid !== uid),
-        },
-        `在${locationsById[current.location].name}出售${item.name}，回收 ${revenue} 金币。`,
+        }, seconds),
+        withActionTime(`在${locationsById[current.location].name}出售${item.name}，回收 ${revenue} 金币。`, seconds),
       )
     })
   }
@@ -2895,15 +3335,16 @@ function App() {
       }
 
       const enemy = makeEnemy(locationsById[commission.locationId].risk, commission.locationId)
+      const seconds = getActionSeconds(current, 'commission', { type: commission.type, locationId: commission.locationId })
       return addTaggedLog(
-        awardGuild(addLocationMastery({
+        spendTime(awardGuild(addLocationMastery({
           ...current,
           commissions: remaining,
           stats: { ...current.stats, commissionsDone: (current.stats.commissionsDone ?? 0) + 1 },
           combat: { ...enemy, gold: enemy.gold + rewardGold },
-        }, commission.locationId, 'battles', 1), 'combat', 18 + locationsById[commission.locationId].risk * 4),
+        }, commission.locationId, 'battles', 1), 'combat', 18 + locationsById[commission.locationId].risk * 4), seconds),
         '委托',
-        `接下悬赏委托：${enemy.name}已经现身，胜利后会把委托赏金一并结算。`,
+        withActionTime(`接下悬赏委托：${enemy.name}已经现身，胜利后会把委托赏金一并结算。`, seconds),
       )
     })
   }
@@ -2915,16 +3356,17 @@ function App() {
       if (!lead) return addTaggedLog(current, '线索', '今天已经没有可靠线索可追查。')
       const location = locationsById[current.location]
       if (current.gold < lead.cost) return addTaggedLog(current, '线索', `追查这条线索需要 ${lead.cost} 金币。`)
+      const seconds = getActionSeconds(current, 'localLead', { locationId: current.location, type: lead.type })
       const baseStats = {
         ...current.stats,
         localLeadsFollowed: (current.stats.localLeadsFollowed ?? 0) + 1,
       }
-      const base = {
+      const base = spendTime({
         ...current,
         gold: current.gold - lead.cost,
         localLead: null,
         stats: baseStats,
-      }
+      }, seconds)
       const leadBase = (route = 'explore', xp = 12) => awardGuild(addLocationMastery(base, current.location, route, 1), route, xp)
       const good = goodsById[lead.goodId]
 
@@ -2936,7 +3378,7 @@ function App() {
             inventory: { ...current.inventory, [lead.goodId]: (current.inventory[lead.goodId] ?? 0) + amount },
           },
           '线索',
-          `你顺着“${lead.title}”找到一批压箱样货，花费 ${lead.cost} 金币打点，获得 ${good.name} ×${amount}。`,
+          withActionTime(`你顺着“${lead.title}”找到一批压箱样货，花费 ${lead.cost} 金币打点，获得 ${good.name} ×${amount}。`, seconds),
         )
       }
 
@@ -2949,7 +3391,7 @@ function App() {
             market: { ...current.market, [lead.goodId]: Number(clamp((current.market[lead.goodId] ?? 1) * factor, 0.42, 1.95).toFixed(2)) },
           },
           '线索',
-          `你追到柜台暗价，花费 ${lead.cost} 金币换来一轮私下传话，${good.name}行情被${trend}了。`,
+          withActionTime(`你追到柜台暗价，花费 ${lead.cost} 金币换来一轮私下传话，${good.name}行情被${trend}了。`, seconds),
         )
       }
 
@@ -2966,7 +3408,7 @@ function App() {
         return addTaggedLog(
           next,
           '线索',
-          `你花费 ${lead.cost} 金币追查“${lead.title}”，${metBefore ? '又一次遇见' : '结识了'}${npc.name}。${npc.text} 好感 +${gain}。`,
+          withActionTime(`你花费 ${lead.cost} 金币追查“${lead.title}”，${metBefore ? '又一次遇见' : '结识了'}${npc.name}。${npc.text} 好感 +${gain}。`, seconds),
         )
       }
 
@@ -2976,7 +3418,7 @@ function App() {
         return addTaggedLog(
           { ...leadBase('explore', 10), riskPressure: Math.max(0, (current.riskPressure ?? 0) - 1) },
           '线索',
-          `你核对旧地图角，花费 ${lead.cost} 金币确认${location.name}的秘闻已暂时补齐，顺手排除了一条危险误路。`,
+          withActionTime(`你核对旧地图角，花费 ${lead.cost} 金币确认${location.name}的秘闻已暂时补齐，顺手排除了一条危险误路。`, seconds),
         )
       }
 
@@ -2994,7 +3436,7 @@ function App() {
           },
         },
         '线索',
-        `你花费 ${lead.cost} 金币买下巡路口信，车队避开一段麻烦路，风险压力 -3${faction ? `，${faction.name}好感 +1` : ''}。`,
+        withActionTime(`你花费 ${lead.cost} 金币买下巡路口信，车队避开一段麻烦路，风险压力 -3${faction ? `，${faction.name}好感 +1` : ''}。`, seconds),
       )
     })
   }
@@ -3386,6 +3828,18 @@ function App() {
     })
   }
 
+  const progressStory = (arc) => {
+    if (!canAct || !arc) return
+    commit((current) => {
+      const currentArc = arc.type === 'npc' ? NPC_STORY_ARCS[arc.npcId] : MAIN_STORY_ARC
+      const status = getStoryRequirementStatus(current, currentArc)
+      if (!status.ok) return addTaggedLog(current, '篇章', `${currentArc.name}暂时不能推进：${status.reason}。`)
+      const progress = getStoryProgress(current, currentArc)
+      const seconds = getActionSeconds(current, 'story', { final: progress + 1 >= currentArc.steps.length })
+      return advanceStoryChapter(current, currentArc, seconds)
+    })
+  }
+
   const exportSave = () => {
     setSaveError('')
     setSaveText(encodeSave(game))
@@ -3407,7 +3861,7 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className={`app-shell ${pendingAction ? 'is-busy' : ''}`} aria-busy={pendingAction ? 'true' : 'false'}>
       <header className="topbar">
         <div>
           <p className="eyebrow">奇幻商旅文字小游戏</p>
@@ -3433,12 +3887,31 @@ function App() {
         <strong>{latestEvent}</strong>
       </section>
 
+      {pendingAction && (
+        <section className={`action-wait action-${pendingAction.kind}`} aria-live="polite" role="status">
+          <span>{pendingAction.label}</span>
+          <strong>{pendingAction.messages[pendingAction.messageIndex]}</strong>
+          <small>剩余 {pendingAction.remaining} 秒 · 共 {pendingAction.seconds} 秒</small>
+          <div className="action-progress" aria-hidden="true">
+            <i style={{ width: `${pendingAction.progress}%` }} />
+          </div>
+        </section>
+      )}
+
+      {dayToast && (
+        <aside className="day-toast" aria-live="polite">
+          <strong>第 {dayToast.day} 天</strong>
+          <span>{dayToast.text}</span>
+        </aside>
+      )}
+
       <nav className="tab-nav" aria-label="功能分页">
         {tabs.map(([id, label]) => (
           <button
             key={id}
             type="button"
             className={activeTab === id ? 'active' : ''}
+            disabled={Boolean(pendingAction)}
             onClick={() => setActiveTab(id)}
           >
             {label}
@@ -3454,6 +3927,7 @@ function App() {
         <strong>日势：{todayFocus.localScene}</strong>
         <strong>线索：{todayFocus.localLead}</strong>
         <strong>摊位：{todayFocus.marketOffer}</strong>
+        <strong>篇章：{todayFocus.story}</strong>
         <strong>风险：{todayFocus.pressureText}</strong>
         <strong>用时：{todayFocus.elapsed}</strong>
         <strong>夜营：{todayFocus.camp}</strong>
@@ -3477,9 +3951,9 @@ function App() {
             <p>敌方生命 {game.combat.hp}/{game.combat.maxHp}，攻击 {game.combat.attack}，防御 {game.combat.defense}</p>
           </div>
           <div className="button-row">
-            <button type="button" onClick={() => combatAction('attack')}>攻击</button>
-            <button type="button" onClick={() => combatAction('heal')}>使用药草</button>
-            <button type="button" onClick={() => combatAction('escape')}>尝试逃跑</button>
+            <button type="button" disabled={Boolean(pendingAction)} onClick={() => combatAction('attack')}>攻击</button>
+            <button type="button" disabled={Boolean(pendingAction)} onClick={() => combatAction('heal')}>使用药草</button>
+            <button type="button" disabled={Boolean(pendingAction)} onClick={() => combatAction('escape')}>尝试逃跑</button>
           </div>
         </section>
       )}
@@ -3674,6 +4148,22 @@ function App() {
             </div>
           </section>
 
+          <section className="panel story-panel">
+            <PanelTitle kicker="篇章" title="白塔旧契" />
+            <article className={`story-card ${mainStoryStep ? '' : 'is-complete'}`}>
+              <div>
+                <strong>{mainStoryStep ? mainStoryStep.title : '旧契已立成商号'}</strong>
+                <span>{MAIN_STORY_ARC.blurb}</span>
+                <small>进度 {getStoryProgress(game, MAIN_STORY_ARC)}/{MAIN_STORY_ARC.steps.length}</small>
+                <small>{mainStoryStep ? mainStoryStep.need : '你已经把白塔旧债整理成公开商路。'}</small>
+                <small>{mainStoryStep ? `状态：${mainStoryStatus.reason}` : '状态：已完成'}</small>
+              </div>
+              <button type="button" disabled={!canAct || !mainStoryStep || !mainStoryStatus.ok} onClick={() => progressStory(MAIN_STORY_ARC)}>
+                {mainStoryStep ? '推进篇章' : '篇章完成'}
+              </button>
+            </article>
+          </section>
+
           <section className="panel camp-panel">
             <PanelTitle kicker="夜营" title="每日策略" />
             <div className="camp-list">
@@ -3779,6 +4269,19 @@ function App() {
                     <small>偏好礼物：{activeNpc.likes.map((id) => goodsById[id].name).join('、')}</small>
                     <small>伴侣加成：{formatNpcBonus(activeNpc.bonus)}</small>
                     <small>关系提示：{relationshipHint(activeNpc, activeRel)}</small>
+                    {activeNpcStory && (
+                      <article className={`npc-story-card ${activeNpcStoryStep ? '' : 'is-complete'}`}>
+                        <strong>{activeNpcStory.name}</strong>
+                        <span>{activeNpcStory.blurb}</span>
+                        <small>进度 {getStoryProgress(game, activeNpcStory)}/{activeNpcStory.steps.length}</small>
+                        <small>{activeNpcStoryStep ? `${activeNpcStoryStep.title}：${activeNpcStoryStep.need}` : '个人篇章已完成。'}</small>
+                        <div className="button-row compact">
+                          <button type="button" disabled={!canAct || !activeNpcStoryStep || !activeNpcStoryStatus?.ok} onClick={() => progressStory(activeNpcStory)}>
+                            {activeNpcStoryStep ? `推进：${activeNpcStoryStatus?.reason}` : '篇章完成'}
+                          </button>
+                        </div>
+                      </article>
+                    )}
                     <small className={activeNpcInteractedToday ? 'daily-limit is-used' : 'daily-limit'}>
                       {activeNpcInteractedToday ? '今日已互动：明天才能继续推进这段关系。' : '今日可互动：每位人物每天只能成功互动一次。'}
                     </small>
@@ -3885,9 +4388,9 @@ function App() {
         <section className="panel save-panel">
           <PanelTitle kicker="存档" title="导入与导出" />
           <div className="save-actions">
-            <button type="button" onClick={exportSave}>导出存档</button>
-            <button type="button" onClick={importSave}>导入存档</button>
-            <button type="button" onClick={resetGame}>新开一局</button>
+            <button type="button" disabled={Boolean(pendingAction)} onClick={exportSave}>导出存档</button>
+            <button type="button" disabled={Boolean(pendingAction)} onClick={importSave}>导入存档</button>
+            <button type="button" disabled={Boolean(pendingAction)} onClick={resetGame}>新开一局</button>
           </div>
           <textarea
             value={saveText}
