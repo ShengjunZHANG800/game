@@ -145,6 +145,7 @@ const ACHIEVEMENTS = [
   { id: 'commissioner', name: '委托熟手', text: '完成 10 个本地委托。', test: (s) => (s.stats.commissionsDone ?? 0) >= 10 },
   { id: 'routeContractor', name: '第一张跨城商单', text: '完成 1 个跨城商单。', test: (s) => (s.stats.routeContractsDone ?? 0) >= 1 },
   { id: 'routeNetworker', name: '商路承运人', text: '完成 6 个跨城商单。', test: (s) => (s.stats.routeContractsDone ?? 0) >= 6 },
+  { id: 'routeTroubleshooter', name: '风雨承运', text: '处理 5 次跨城商单途中状况。', test: (s) => (s.stats.routeContractIncidents ?? 0) >= 5 },
   { id: 'guildRising', name: '小商会成形', text: '商会等级达到 3。', test: (s) => (s.guild?.level ?? 1) >= 3 },
   { id: 'guildHouse', name: '自立商号', text: '商会等级达到 6。', test: (s) => (s.guild?.level ?? 1) >= 6 },
   { id: 'localExpert', name: '地方通', text: '任一地点熟练度达到 4 级。', test: (s) => LOCATIONS.some((location) => getMasteryLevel(s, location.id) >= 4) },
@@ -760,6 +761,79 @@ function getRouteContractStatus(game, contract = game.activeRouteContract) {
   return late ? '可逾期交付，奖励降低' : '可完成'
 }
 
+function getRouteContractFocus(game) {
+  const contract = game.activeRouteContract ?? game.routeContract
+  if (!contract) return '今日没有可靠跨城商单'
+  const target = locationsById[contract.targetId]
+  const good = goodsById[contract.goodId]
+  if (game.activeRouteContract) return `${target?.name ?? '目的地'}收 ${good?.name ?? '货物'} ×${contract.amount} · ${getRouteContractStatus(game, contract)}`
+  return `可接：${target?.name ?? '目的地'}收 ${good?.name ?? '货物'} ×${contract.amount}`
+}
+
+function createRouteContractIncident(game, destination, routeCondition = game.routeCondition) {
+  const contract = game.activeRouteContract
+  if (!contract) return null
+  const target = locationsById[contract.targetId]
+  const origin = locationsById[contract.originId]
+  const good = goodsById[contract.goodId]
+  if (!target || !good) return null
+  const conditionEffect = getRouteConditionEffect(routeCondition)
+  const arriving = destination.id === target.id
+  const nearDeadline = game.day + 1 >= contract.deadline
+  const have = game.inventory?.[contract.goodId] ?? 0
+  const chance = clamp(
+    0.14 + destination.risk * 0.018 + (game.riskPressure ?? 0) * 0.005 + conditionEffect.danger + (nearDeadline ? 0.08 : 0) + (arriving ? 0.06 : 0),
+    0.08,
+    0.42,
+  )
+  if (Math.random() > chance) return null
+
+  const events = [
+    () => ({
+      kind: 'contractIncident',
+      gold: rand(35, 95),
+      pressure: -1,
+      text: `${target.name}的收货账房派人在路亭等你，确认封蜡后先垫了一笔脚钱。`,
+    }),
+    () => ({
+      kind: 'contractIncident',
+      cost: Math.min(game.gold, rand(18, 62)),
+      pressure: rand(1, 2),
+      text: `竞争商队在${destination.name}外散布截单消息，你花钱打点驿站才稳住货车。`,
+    }),
+    () => ({
+      kind: 'contractIncident',
+      extend: 1,
+      text: `${origin?.name ?? '出发地'}传来补签条款，收货人认可路况耽搁，商单期限顺延一天。`,
+    }),
+    () => ({
+      kind: 'contractIncident',
+      rep: 1,
+      pressure: -1,
+      text: `沿途小商号看见你仍守着${good.name}商单，愿意替你的商号作保。`,
+    }),
+  ]
+
+  if (have < contract.amount) {
+    events.push(() => ({
+      kind: 'contractIncident',
+      goodId: contract.goodId,
+      amount: 1,
+      text: `委托人的暗仓临时补出一件${good.name}样货，免得整张商单卡在缺货上。`,
+    }))
+  }
+  if (arriving) {
+    events.push(() => ({
+      kind: 'contractIncident',
+      gold: rand(45, 120),
+      pressure: -2,
+      text: `${target.name}的验货人提前接应车队，帮你避开最后一段盘查。`,
+    }))
+  }
+
+  return pick(events)()
+}
+
 function createCommissions(locationId, day) {
   const location = locationsById[locationId]
   const trait = LOCATION_TRAITS[locationId] ?? {}
@@ -835,6 +909,7 @@ function normalizeStats(baseStats, stats = {}) {
     companionHelps: stats.companionHelps ?? 0,
     commissionsDone: stats.commissionsDone ?? 0,
     routeContractsDone: stats.routeContractsDone ?? 0,
+    routeContractIncidents: stats.routeContractIncidents ?? 0,
     pressureCleared: stats.pressureCleared ?? 0,
     npcQuests: stats.npcQuests ?? 0,
     landmarksFound: stats.landmarksFound ?? 0,
@@ -1183,6 +1258,7 @@ function createInitialGame() {
       pressureCleared: 0,
       npcQuests: 0,
       landmarksFound: 0,
+      routeContractIncidents: 0,
     },
     achievements: [],
     log: [
@@ -1284,6 +1360,7 @@ function getTodayFocus(game) {
     condition: getRouteConditionEffect(game.routeCondition).name,
     localScene: game.localScene?.name ?? '平稳市面',
     commission: commission ? `${commissionLabels[commission.type]}：${commission.text}` : '今日暂无委托',
+    contract: getRouteContractFocus(game),
     mastery: `本地熟练度 ${getMasteryLevel(game, game.location)} 级 · ${getFactionFavor(game).tier?.name ?? '普通往来'}`,
   }
 }
@@ -1793,6 +1870,35 @@ function applyEvent(game, event) {
       `${event.text} 风险压力 ${event.amount > 0 ? '+' : ''}${event.amount}。`,
     )
   }
+  if (event.kind === 'contractIncident') {
+    const contract = next.activeRouteContract
+    if (!contract) return addTaggedLog(next, '商单', event.text)
+    const pressureDelta = event.pressure ?? 0
+    const detail = []
+    if (event.gold) detail.push(`获得 ${event.gold} 金币`)
+    if (event.cost) detail.push(`支出 ${event.cost} 金币`)
+    if (event.pressure) detail.push(`风险压力 ${event.pressure > 0 ? '+' : ''}${event.pressure}`)
+    if (event.extend) detail.push(`期限顺延到第 ${contract.deadline + event.extend} 天`)
+    if (event.rep) detail.push(`声望 +${event.rep}`)
+    if (event.goodId && event.amount) detail.push(`获得 ${event.amount} 件${goodsById[event.goodId].name}`)
+    return addTaggedLog(
+      {
+        ...next,
+        gold: Math.max(0, next.gold + (event.gold ?? 0) - (event.cost ?? 0)),
+        reputation: next.reputation + (event.rep ?? 0),
+        inventory: event.goodId ? { ...next.inventory, [event.goodId]: (next.inventory[event.goodId] ?? 0) + event.amount } : next.inventory,
+        activeRouteContract: event.extend ? { ...contract, deadline: contract.deadline + event.extend } : contract,
+        riskPressure: clamp((next.riskPressure ?? 0) + pressureDelta, 0, 24),
+        stats: {
+          ...next.stats,
+          routeContractIncidents: (next.stats.routeContractIncidents ?? 0) + 1,
+          pressureCleared: (next.stats.pressureCleared ?? 0) + (pressureDelta < 0 ? Math.abs(pressureDelta) : 0),
+        },
+      },
+      '商单',
+      `${event.text}${detail.length ? ` ${detail.join('，')}。` : ''}`,
+    )
+  }
   if (event.kind === 'cost') {
     return addLog({ ...next, gold: Math.max(0, next.gold - event.gold) }, event.text)
   }
@@ -2009,7 +2115,9 @@ function App() {
         }, locationId, 'explores', 1), 'explore', 14 + destination.risk * 3),
         `第 ${current.day + 1} 天，你抵达${destination.name}，支付路费 ${travelCost} 金币。${assist?.type === 'route' ? ' 同行协助替你压低了一段路费。' : ''}${routeText}${sceneText}${newsText}`,
       )
-      return maybePartnerEvent(applyEvent(moved, createTravelEvent(current, destination, current.routeCondition)))
+      const traveled = applyEvent(moved, createTravelEvent(current, destination, current.routeCondition))
+      const incident = createRouteContractIncident(current, destination, current.routeCondition)
+      return maybePartnerEvent(incident ? applyEvent(traveled, incident) : traveled)
     })
   }
 
@@ -2577,6 +2685,7 @@ function App() {
         <strong>路况：{todayFocus.condition}</strong>
         <strong>日势：{todayFocus.localScene}</strong>
         <strong>风险：{todayFocus.pressureText}</strong>
+        <strong>商单：{todayFocus.contract}</strong>
         <strong>{todayFocus.commission}</strong>
       </section>
 
@@ -2669,13 +2778,15 @@ function App() {
                 const sell = getPrice(game, good.id, 'sell')
                 const owned = game.inventory[good.id] ?? 0
                 const priceLabel = getPriceLabel(game, good.id)
+                const contractGood = [game.activeRouteContract?.goodId, game.routeContract?.goodId].includes(good.id)
                 return (
-                  <article key={good.id} className="market-row">
+                  <article key={good.id} className={`market-row ${contractGood ? 'contract-good' : ''}`}>
                     <div>
                       <strong className={`rarity-text rarity-${good.rarity}`}>{good.name}</strong>
                       <span>{good.type} · {describeRarity(good.rarity)} · 重量 {good.weight} · 持有 {owned}</span>
                       <small>{good.text}</small>
                       <small className={`price-tag ${priceLabel}`}>今日价位：{priceLabel}</small>
+                      {contractGood && <small className="contract-good-tag">跨城商单关注货物</small>}
                     </div>
                     <div className="price-block">
                       <span>买 {buy}</span>

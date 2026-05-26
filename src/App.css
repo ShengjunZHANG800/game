@@ -516,6 +516,20 @@ button:disabled {
   color: #ffd07a;
 }
 
+.market-row.contract-good {
+  border-color: rgba(142, 230, 168, 0.36);
+  background: rgba(43, 79, 57, 0.2);
+}
+
+.contract-good-tag {
+  width: fit-content;
+  padding: 3px 7px;
+  border: 1px solid rgba(142, 230, 168, 0.28);
+  border-radius: 999px;
+  color: #9fe3b5;
+  background: rgba(0, 0, 0, 0.18);
+}
+
 .rarity-text.rarity-普通,
 .rarity-chip.rarity-普通 {
   color: #e6dfcf;
@@ -956,7 +970,8 @@ button:disabled {
 }
 
 .tag-交易,
-.tag-委托 {
+.tag-委托,
+.tag-商单 {
   color: #9fe3b5;
 }
 
